@@ -9906,15 +9906,15 @@ image###生成的提示词###
             | (bytes[offset + 3] << 24)
         ) >>> 0;
         const hasBytesAt = (bytes, offset, pattern) => pattern.every((value, index) => bytes[offset + index] === value);
+        const findBytesOffset = (bytes, pattern) => {
+            for (let i = 0; i <= bytes.length - pattern.length; i++) {
+                if (hasBytesAt(bytes, i, pattern)) return i;
+            }
+            return -1;
+        };
         const findPngBytes = (bytes) => {
             const pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-            let pngStart = -1;
-            for (let i = 0; i <= bytes.length - pngSignature.length; i++) {
-                if (hasBytesAt(bytes, i, pngSignature)) {
-                    pngStart = i;
-                    break;
-                }
-            }
+            const pngStart = findBytesOffset(bytes, pngSignature);
             if (pngStart < 0) return null;
             for (let i = pngStart + pngSignature.length + 4; i <= bytes.length - 8; i++) {
                 if (bytes[i] === 0x49 && bytes[i + 1] === 0x45 && bytes[i + 2] === 0x4E && bytes[i + 3] === 0x44) {
@@ -10005,6 +10005,15 @@ image###生成的提示词###
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             return new Blob([bytes], { type: mimeType });
         };
+        const imageStringToResult = (imageValue) => {
+            if (/^data:image\//i.test(imageValue)) {
+                const match = imageValue.match(/^data:(image\/[^;]+);base64,(.*)$/is);
+                if (!match) return { url: imageValue };
+                return { blob: base64ToBlob(match[2].replace(/\s+/g, ''), match[1]) };
+            }
+            if (/^https?:\/\//i.test(imageValue)) return { url: imageValue };
+            return { blob: base64ToBlob(imageValue.replace(/^data:[^,]+,/, '').replace(/\s+/g, '')) };
+        };
         const extractImageFromJson = (payload) => {
             const seen = new Set();
             const findImageString = (value) => {
@@ -10045,28 +10054,103 @@ image###生成的提示词###
                 const message = payload?.error?.message || payload?.error || payload?.message || 'JSON response does not contain an image';
                 throw new Error(String(message));
             }
-            if (/^data:image\//i.test(imageValue)) {
-                const match = imageValue.match(/^data:(image\/[^;]+);base64,(.*)$/i);
-                if (!match) return { url: imageValue };
-                return { blob: base64ToBlob(match[2], match[1]) };
+            return imageStringToResult(imageValue);
+        };
+        const extractJsonValuesFromText = (text) => {
+            const values = [];
+            let start = -1;
+            let depth = 0;
+            let quote = '';
+            let escaped = false;
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (quote) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch === '\\') {
+                        escaped = true;
+                    } else if (ch === quote) {
+                        quote = '';
+                    }
+                    continue;
+                }
+                if (ch === '"' || ch === "'") {
+                    quote = ch;
+                    continue;
+                }
+                if (ch === '{' || ch === '[') {
+                    if (depth === 0) start = i;
+                    depth++;
+                } else if ((ch === '}' || ch === ']') && depth > 0) {
+                    depth--;
+                    if (depth === 0 && start >= 0) {
+                        values.push(text.slice(start, i + 1));
+                        start = -1;
+                    }
+                }
             }
-            if (/^https?:\/\//i.test(imageValue)) return { url: imageValue };
-            return { blob: base64ToBlob(imageValue.replace(/^data:[^,]+,/, '')) };
+            return values;
+        };
+        const tryExtractImageFromText = (text) => {
+            const trimmed = String(text || '').trim();
+            if (!trimmed) throw new Error('Empty image response');
+
+            try {
+                return extractImageFromJson(JSON.parse(trimmed));
+            } catch (_) {}
+
+            const lines = trimmed
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(line => line.startsWith('data:') ? line.slice(5).trim() : line)
+                .filter(line => line && line !== '[DONE]' && !/^(event|id|retry):/i.test(line));
+
+            for (const line of lines) {
+                if (!/^[{[]/.test(line)) continue;
+                try {
+                    return extractImageFromJson(JSON.parse(line));
+                } catch (_) {}
+            }
+
+            for (const jsonText of extractJsonValuesFromText(trimmed)) {
+                try {
+                    return extractImageFromJson(JSON.parse(jsonText));
+                } catch (_) {}
+            }
+
+            const dataUrlMatch = trimmed.match(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/i);
+            if (dataUrlMatch) return imageStringToResult(dataUrlMatch[0]);
+
+            const imageUrlMatch = trimmed.match(/https?:\/\/[^\s"'<>]+/i);
+            if (imageUrlMatch) return { url: imageUrlMatch[0] };
+
+            const base64ImageMatch = trimmed.match(/(?:iVBOR|\/9j\/|UklGR)[A-Za-z0-9+/=\s]{120,}/);
+            if (base64ImageMatch) return imageStringToResult(base64ImageMatch[0]);
+
+            throw new Error(`文本响应中未找到图片：${trimmed.slice(0, 160).replace(/\s+/g, ' ')}`);
         };
         const extractNaiImageResult = async (resp) => {
             const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-            if (contentType.includes('application/json')) {
-                return extractImageFromJson(await resp.json());
-            }
             if (contentType.startsWith('image/')) {
                 return { blob: await resp.blob() };
             }
 
             const bytes = new Uint8Array(await resp.arrayBuffer());
             const firstNonWhitespace = bytes.find(value => ![9, 10, 13, 32].includes(value));
-            if (firstNonWhitespace === 0x7B || firstNonWhitespace === 0x5B) {
+            let textParseError = null;
+            if (contentType.includes('application/json')
+                || contentType.includes('text/')
+                || contentType.includes('event-stream')
+                || contentType.includes('x-ndjson')
+                || firstNonWhitespace === 0x7B
+                || firstNonWhitespace === 0x5B) {
                 const text = new TextDecoder().decode(bytes);
-                return extractImageFromJson(JSON.parse(text));
+                try {
+                    return tryExtractImageFromText(text);
+                } catch (e) {
+                    textParseError = e;
+                }
             }
             if (hasBytesAt(bytes, 0, [0xFF, 0xD8, 0xFF])) {
                 return { blob: new Blob([bytes], { type: 'image/jpeg' }) };
@@ -10080,13 +10164,15 @@ image###生成的提示词###
                 return { blob: new Blob([directPngBytes], { type: 'image/png' }) };
             }
 
-            if (hasBytesAt(bytes, 0, [0x50, 0x4B, 0x03, 0x04])) {
-                const pngBytes = await extractPngFromZipBytes(bytes);
+            const zipStart = findBytesOffset(bytes, [0x50, 0x4B, 0x03, 0x04]);
+            if (zipStart >= 0) {
+                const pngBytes = await extractPngFromZipBytes(bytes.slice(zipStart));
                 if (pngBytes) return { blob: new Blob([pngBytes], { type: 'image/png' }) };
             }
 
             const snippet = new TextDecoder().decode(bytes.slice(0, 160)).replace(/\s+/g, ' ').trim();
-            throw new Error(`无法从生图响应中提取图片${snippet ? `：${snippet}` : ''}`);
+            const detail = textParseError?.message || snippet;
+            throw new Error(`无法从生图响应中提取图片${detail ? `：${detail}` : ''}`);
         };
 
         const processPendingNaiImages = async () => {
