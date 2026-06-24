@@ -1,4 +1,4 @@
-﻿const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
 // Configure marked to disable indented code blocks
 // This allows indented HTML (like details/summary) to be rendered as HTML instead of code
@@ -83,7 +83,16 @@ createApp({
         const systemRegexNames = ['Auto Replace {{user}}', 'NAI画图正则'];
         const systemWorldInfoNames = ['自动生图'];
 
-        const IMAGE_GEN_BASE_URL = 'https://nai.sta1n.cn';
+        const DEFAULT_IMAGE_GEN_PROVIDER_ID = 'sta1n-nai';
+        const DEFAULT_IMAGE_GEN_BASE_URL = 'https://nai.sta1n.cn';
+        const imageGenProviderOptions = [
+            {
+                id: 'sta1n-nai',
+                name: 'STA1N NAI',
+                baseUrl: 'https://nai.sta1n.cn',
+                icon: 'https://nai.sta1n.cn/favicon.ico'
+            }
+        ];
 
         // --- Default API Configuration ---
         const DEFAULT_API_PROVIDER_ID = 'sta1n';
@@ -190,7 +199,7 @@ createApp({
                     quotaAvailable.value = false;
                     return;
                 }
-                const baseUrl = IMAGE_GEN_BASE_URL;
+                const baseUrl = getImageGenBaseUrl();
                 const response = await fetch(`${baseUrl}/api/api/getUser`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -294,6 +303,33 @@ createApp({
             }
         };
         const searchLibrary = () => loadLibraryPage(1);
+        // 角色卡详情弹窗（仿官方角色描述面板）
+        const showLibraryCardDetail = ref(false);
+        const libraryCardDetail = reactive({ uuid: '', name: '', description: '', authorName: '', downloadCount: 0, tags: [], data: null });
+        const openLibraryCardDetail = async (card) => {
+            // 先用已有信息展示
+            libraryCardDetail.uuid = card.uuid;
+            libraryCardDetail.name = card.name;
+            libraryCardDetail.description = card.description || '';
+            libraryCardDetail.authorName = card.authorName || '';
+            libraryCardDetail.downloadCount = card.downloadCount || 0;
+            libraryCardDetail.tags = card.tags || [];
+            libraryCardDetail.data = card.data || null;
+            showLibraryCardDetail.value = true;
+            // 若还没拉取完整数据（含 avatar/description），异步拉取
+            if (!libraryCardDetail.data) {
+                try {
+                    const sync = window.RPHubServerSync;
+                    const r = await sync.libraryGet(card.uuid);
+                    if (r && r.data) libraryCardDetail.data = r.data;
+                    if (r && r.card) {
+                        libraryCardDetail.description = r.card.description || libraryCardDetail.description;
+                        libraryCardDetail.downloadCount = r.card.downloadCount || libraryCardDetail.downloadCount;
+                    }
+                } catch (_) {}
+            }
+        };
+
         const downloadLibraryCard = async (card) => {
             const sync = window.RPHubServerSync;
             if (!sync) return;
@@ -684,6 +720,11 @@ createApp({
             fontFamily: 'modern',
             fontFamilyVersion: 4,
             fontSize: window.innerWidth > 768 ? 16 : 14,
+            imageGenProviderId: DEFAULT_IMAGE_GEN_PROVIDER_ID,
+            imageGenCustomBaseUrl: '',
+            imageGenCustomBaseUrl2: '',
+            imageGenProtocol: 'sta1n_proxy', // 'sta1n_proxy' | 'novelai_native'
+            imageGenModel: 'nai-diffusion-4-5-full',
             imageGenKey: '',
             imageStyle: 'vertical',
             customImageArtists: '',
@@ -786,6 +827,63 @@ createApp({
         };
         normalizeApiProviderSettings();
 
+        // ---------- Image generation provider selector ----------
+        const showImageGenProviderSelector = ref(false);
+        const selectedImageGenProviderId = ref(DEFAULT_IMAGE_GEN_PROVIDER_ID);
+        const customImageGenProviderOption = { id: 'custom', name: '自定义', baseUrl: '', icon: '' };
+        const customImageGenProviderOption2 = { id: 'custom2', name: '自定义2', baseUrl: '', icon: '' };
+        const customImageGenProviderOptions = [customImageGenProviderOption, customImageGenProviderOption2];
+        const isCustomImageGenProviderId = (id) => customImageGenProviderOptions.some(provider => provider.id === id);
+        const getCustomImageGenUrlKey = (id) => id === 'custom2' ? 'imageGenCustomBaseUrl2' : 'imageGenCustomBaseUrl';
+        const normalizeImageGenProviderUrl = (url) => String(url || '').replace(/\/+$/, '').toLowerCase();
+        const getImageGenProviderById = (id) => imageGenProviderOptions.find(provider => provider.id === id);
+        const getImageGenProviderByUrl = (url) => {
+            const currentUrl = normalizeImageGenProviderUrl(url);
+            return imageGenProviderOptions.find(provider => normalizeImageGenProviderUrl(provider.baseUrl) === currentUrl);
+        };
+        const normalizeImageGenProviderSettings = () => {
+            let provider = getImageGenProviderById(settings.imageGenProviderId);
+            if (!provider && !isCustomImageGenProviderId(settings.imageGenProviderId)) {
+                provider = getImageGenProviderByUrl(settings.imageGenBaseUrl || settings.imageGenCustomBaseUrl || DEFAULT_IMAGE_GEN_BASE_URL);
+                settings.imageGenProviderId = provider?.id || DEFAULT_IMAGE_GEN_PROVIDER_ID;
+            }
+            if (isCustomImageGenProviderId(settings.imageGenProviderId)) {
+                const urlKey = getCustomImageGenUrlKey(settings.imageGenProviderId);
+                settings[urlKey] = settings[urlKey] || settings.imageGenBaseUrl || '';
+            } else {
+                provider = getImageGenProviderById(settings.imageGenProviderId) || getImageGenProviderById(DEFAULT_IMAGE_GEN_PROVIDER_ID);
+                settings.imageGenProviderId = provider.id;
+            }
+            selectedImageGenProviderId.value = settings.imageGenProviderId;
+        };
+        const selectedImageGenProvider = computed(() => {
+            const customProvider = customImageGenProviderOptions.find(provider => (
+                provider.id === settings.imageGenProviderId || provider.id === selectedImageGenProviderId.value
+            ));
+            if (customProvider) {
+                const urlKey = getCustomImageGenUrlKey(customProvider.id);
+                return { ...customProvider, baseUrl: settings[urlKey] || '' };
+            }
+            const selectedProvider = getImageGenProviderById(settings.imageGenProviderId) || getImageGenProviderById(selectedImageGenProviderId.value);
+            return selectedProvider || imageGenProviderOptions[0];
+        });
+        const isCustomImageGenProvider = computed(() => isCustomImageGenProviderId(selectedImageGenProvider.value.id));
+        const selectImageGenProvider = (provider) => {
+            selectedImageGenProviderId.value = provider.id;
+            settings.imageGenProviderId = provider.id;
+            showImageGenProviderSelector.value = false;
+        };
+        const getImageGenBaseUrl = () => {
+            normalizeImageGenProviderSettings();
+            if (isCustomImageGenProviderId(settings.imageGenProviderId)) {
+                const url = settings[getCustomImageGenUrlKey(settings.imageGenProviderId)] || '';
+                return String(url || DEFAULT_IMAGE_GEN_BASE_URL).replace(/\/+$/, '');
+            }
+            const provider = getImageGenProviderById(settings.imageGenProviderId) || getImageGenProviderById(DEFAULT_IMAGE_GEN_PROVIDER_ID);
+            return String(provider.baseUrl || DEFAULT_IMAGE_GEN_BASE_URL).replace(/\/+$/, '');
+        };
+        normalizeImageGenProviderSettings();
+
         watch(() => settings.apiKey, (newKey) => {
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
@@ -794,12 +892,14 @@ createApp({
             if (settings.apiProviderKeys[providerId] !== (newKey || '')) {
                 settings.apiProviderKeys[providerId] = newKey || '';
             }
+            scheduleServerSyncPush();
         });
 
         watch(() => settings.apiUrl, (newUrl) => {
             if (isCustomApiProviderId(settings.apiProviderId)) {
                 settings[getCustomApiUrlKey(settings.apiProviderId)] = newUrl || '';
             }
+            scheduleServerSyncPush();
         });
 
         const syncSettingsToGenerator = () => {
@@ -1982,6 +2082,8 @@ createApp({
             } catch (e) {
                 console.error('Failed to save chat history:', e);
             }
+            // Trigger server sync for scoped chat data
+            scheduleServerSyncPush();
         };
 
         const scheduleChatHistorySave = () => {
@@ -2008,6 +2110,7 @@ createApp({
             if (!_memoriesLoaded || !currentCharacter.value?.uuid) return;
             if (!db) await initDB();
             await setScopedStoredValue('memories', currentCharacter.value.uuid, await compactMemoriesForStorageAsync(memories.value), { clone: false });
+            scheduleServerSyncPush();
         };
 
         const saveWorldInfoStateNow = async () => {
@@ -2015,6 +2118,7 @@ createApp({
             await setStoredValue('characters', characters.value);
             await setStoredValue('worldinfo', worldInfo.value);
             await setStoredValue('global_worldinfo', globalWorldInfo.value);
+            scheduleServerSyncPush();
         };
 
         const saveData = async (options = {}) => {
@@ -4543,7 +4647,7 @@ ${content}
                 const id = setTimeout(() => controller.abort(), 10000);
                 const startTime = performance.now();
 
-                const baseUrl = IMAGE_GEN_BASE_URL;
+                const baseUrl = getImageGenBaseUrl();
 
                 await fetch(baseUrl, {
                     method: 'HEAD',
@@ -9547,7 +9651,7 @@ ${content}
 
         const enforceSpecialRules = () => {
             const imageGenToken = settings.imageGenKey.trim();
-            const baseUrl = IMAGE_GEN_BASE_URL;
+            const baseUrl = getImageGenBaseUrl();
 
             // 1. NAI画图正则 (统一版本)
             const imageGenRegexName = 'NAI画图正则';
@@ -9594,10 +9698,21 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             }
 
             const encodedTargetArtists = encodeURIComponent(targetArtists);
+            const negativePrompt = 'bad anatomy, bad feet, bad hands, bad proportions, blurry, cloned face, cropped, deformed, disfigured, error, extra arms, extra digit, extra legs, extra limbs, fewer digits, fused fingers, gross proportions, ink eyes, ink hair, jpeg artifacts, long neck, low quality, malformed limbs, missing arms, missing fingers, missing legs, mutated hands, mutation, normal quality, poorly drawn face, poorly drawn hands, signature, text, too many fingers, ugly, watermark, worst quality';
+
+            let imageGenRegexReplacement;
+            if (settings.imageGenProtocol === 'novelai_native') {
+                // NovelAI 原生协议：生成占位符，由 JS 异步 POST 请求加载图片
+                imageGenRegexReplacement = '<div class="nai-pending-image" data-tags="$1" data-artists="' + targetArtists.replace(/"/g, '&quot;') + '" style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(200,200,200,0.15); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;"><div style="color: #999; font-size: 13px; padding: 20px;">🎨 生成图片中...</div></div>';
+            } else {
+                // STA1N 代理协议：GET 请求直接加载图片
+                imageGenRegexReplacement = '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + baseUrl + '/generate?tag=$1&token=' + imageGenToken + '&model=' + (settings.imageGenModel || 'nai-diffusion-4-5-full') + '&artist=' + encodedTargetArtists + '&size=' + settings.imageSize + '&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative=' + encodeURIComponent(negativePrompt) + '&nocache=0&noise_schedule=karras"  alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>';
+            }
+
             const imageGenRegexContent = {
                 name: imageGenRegexName,
                 regex: '/image###([\\s\\S]*?)###/g',
-                replacement: '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + baseUrl + '/generate?tag=$1&token=' + imageGenToken + '&model=nai-diffusion-4-5-full&artist=' + encodedTargetArtists + '&size=' + settings.imageSize + '&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative={{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{{missing legs}},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}&nocache=0&noise_schedule=karras"  alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>',
+                replacement: imageGenRegexReplacement,
                 placement: [2],
                 markdownOnly: true,
                 promptOnly: false,
@@ -9717,6 +9832,87 @@ image###生成的提示词###
 
         };
 
+        // ---------- NovelAI 原生协议图片加载 ----------
+        const NAI_SIZE_MAP = { '竖图': [832, 1216], '横图': [1216, 832], '方图': [1024, 1024] };
+        const NAI_NEGATIVE = 'bad anatomy, bad feet, bad hands, bad proportions, blurry, cloned face, cropped, deformed, disfigured, error, extra arms, extra digit, extra legs, extra limbs, fewer digits, fused fingers, gross proportions, ink eyes, ink hair, jpeg artifacts, long neck, low quality, malformed limbs, missing arms, missing fingers, missing legs, mutated hands, mutation, normal quality, poorly drawn face, poorly drawn hands, signature, text, too many fingers, ugly, watermark, worst quality';
+
+        const processPendingNaiImages = async () => {
+            if (settings.imageGenProtocol !== 'novelai_native') return;
+            const placeholders = document.querySelectorAll('.nai-pending-image:not([data-loaded])');
+            if (!placeholders.length) return;
+            const baseUrl = getImageGenBaseUrl();
+            const token = settings.imageGenKey.trim();
+            if (!token) return;
+            const [width, height] = NAI_SIZE_MAP[settings.imageSize] || [832, 1216];
+            const model = settings.imageGenModel || 'nai-diffusion-4-5-full';
+
+            for (const el of placeholders) {
+                el.setAttribute('data-loaded', '1'); // mark as processing
+                const tags = el.getAttribute('data-tags') || '';
+                const artists = el.getAttribute('data-artists') || '';
+                const input = [artists, tags].filter(Boolean).join(', ');
+                try {
+                    const resp = await fetch(`${baseUrl}/ai/generate-image`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input,
+                            model,
+                            action: 'generate',
+                            parameters: {
+                                params_version: 3,
+                                width, height,
+                                scale: 6,
+                                sampler: 'k_dpmpp_2m_sde',
+                                steps: 28,
+                                seed: Math.floor(Math.random() * 4294967295),
+                                n_samples: 1,
+                                ucPreset: 0,
+                                qualityToggle: true,
+                                dynamic_thresholding: false,
+                                controlnet_strength: 1,
+                                legacy: false,
+                                add_original_image: false,
+                                noise_schedule: 'karras',
+                                legacy_v3_extend: false,
+                                negative_prompt: NAI_NEGATIVE,
+                            }
+                        })
+                    });
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    // NovelAI returns a zip containing one PNG; extract PNG by signature
+                    const buf = await resp.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    let pngStart = -1;
+                    for (let i = 0; i < bytes.length - 4; i++) {
+                        if (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4E && bytes[i + 3] === 0x47) {
+                            pngStart = i;
+                            break;
+                        }
+                    }
+                    if (pngStart < 0) throw new Error('PNG not found in response');
+                    const pngBlob = new Blob([bytes.slice(pngStart)], { type: 'image/png' });
+                    const url = URL.createObjectURL(pngBlob);
+                    // Replace placeholder content with img
+                    el.innerHTML = `<img src="${url}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
+                    el.style.background = 'rgba(255,255,255,0.32)';
+                    el.style.minHeight = '';
+                    el.style.minWidth = '';
+                } catch (e) {
+                    console.error('NAI image gen failed:', e);
+                    el.innerHTML = `<div style="color: #c00; font-size: 13px; padding: 20px;">图片生成失败: ${e.message}</div>`;
+                }
+            }
+        };
+
+        // After messages render, process pending NAI images
+        watch(displayedChatMessages, () => {
+            if (settings.imageGenProtocol !== 'novelai_native') return;
+            nextTick(() => {
+                setTimeout(() => processPendingNaiImages(), 200);
+            });
+        });
+
         watch(() => settings.imageGenKey, () => {
             enforceSpecialRules();
             if (isAutoImageGenEnabled.value) {
@@ -9724,6 +9920,11 @@ image###生成的提示词###
             }
             saveData();
             fetchQuota();
+        });
+
+        watch(() => [settings.imageGenProtocol, settings.imageGenModel], () => {
+            enforceSpecialRules();
+            saveData();
         });
 
         const prepareLoadedChatHistoryForDisplay = (messages = []) => messages
@@ -11217,7 +11418,7 @@ image###生成的提示词###
             showAnnouncementModal, siteAnnouncement, dontShowAnnouncementAgain, closeAnnouncementModal, formatAnnouncementTime, // 站点公告
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, activeToolInlineStatusText, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationToolCallId, activeToolContinuationHasResponse, activeNativeReasoning, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, availableModels, filteredModels, filteredCharacters,
-            user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOption, customApiProviderOptions, showApiProviderSelector, selectApiProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
+            user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOption, customApiProviderOptions, showApiProviderSelector, selectApiProvider, imageGenProviderOptions, customImageGenProviderOptions, selectedImageGenProvider, isCustomImageGenProvider, showImageGenProviderSelector, selectImageGenProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, getActiveToolAggressivenessLabel, editingActiveTool, normalizeActiveTools, isWebActiveTool, isWorldInfoActiveTool, getWorldInfoAccessMode, getActiveToolDisplayDescription, canConfigureActiveToolResultCount, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,
             activeRegexCount, activeWorldInfoCount, activeUiTemplateCount, chatRoundStats, totalContextLength,
@@ -11228,6 +11429,7 @@ image###生成的提示词###
             // 本站公共库
             libraryCards, libraryLoading, librarySearchQuery, libraryPage, libraryPageSize, libraryTotal,
             loadLibraryPage, searchLibrary, downloadLibraryCard, showMySubmissions, deleteMySubmission,
+            showLibraryCardDetail, libraryCardDetail, openLibraryCardDetail,
             mySubmissions, submitCardToLibrary,
             editorTab, characterDisplayLimit, displayedCharacters, loadMoreCharacters,
             isAutoImageGenEnabled,
