@@ -199,8 +199,13 @@ createApp({
                     quotaAvailable.value = false;
                     return;
                 }
-                const baseUrl = getImageGenBaseUrl();
-                const response = await fetch(`${baseUrl}/api/api/getUser`, {
+                const quotaUrl = getImageGenQuotaUrl();
+                if (!quotaUrl) {
+                    quotaValue.value = 0;
+                    quotaAvailable.value = false;
+                    return;
+                }
+                const response = await fetch(quotaUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ toUserId: imageGenToken })
@@ -881,6 +886,63 @@ createApp({
             }
             const provider = getImageGenProviderById(settings.imageGenProviderId) || getImageGenProviderById(DEFAULT_IMAGE_GEN_PROVIDER_ID);
             return String(provider.baseUrl || DEFAULT_IMAGE_GEN_BASE_URL).replace(/\/+$/, '');
+        };
+        const joinImageGenUrl = (baseUrl, path) => `${String(baseUrl || '').replace(/\/+$/, '')}${path}`;
+        const getImageGenUrlObject = (url) => {
+            const rawUrl = String(url || '').trim();
+            try {
+                return new URL(rawUrl);
+            } catch (_) {
+                try {
+                    return new URL(rawUrl, window.location.href);
+                } catch (_) {
+                    return null;
+                }
+            }
+        };
+        const getImageGenUrlPath = (url) => {
+            const rawUrl = String(url || '').trim();
+            const parsedUrl = getImageGenUrlObject(rawUrl);
+            return parsedUrl
+                ? parsedUrl.pathname.replace(/\/+$/, '').toLowerCase()
+                : rawUrl.split('?')[0].replace(/\/+$/, '').toLowerCase();
+        };
+        const isImageGenDirectEndpoint = (url) => {
+            const path = getImageGenUrlPath(url);
+            return path.endsWith('/api/generate-direct')
+                || path.endsWith('/generate-direct')
+                || path.endsWith('/ai/generate-image');
+        };
+        const isDefaultSta1nImageGenRoot = (url) => {
+            const current = getImageGenUrlObject(String(url || '').replace(/\/+$/, ''));
+            const preset = getImageGenUrlObject(DEFAULT_IMAGE_GEN_BASE_URL);
+            if (current && preset) {
+                return current.origin.toLowerCase() === preset.origin.toLowerCase()
+                    && current.pathname.replace(/\/+$/, '') === '';
+            }
+            return normalizeImageGenProviderUrl(url) === normalizeImageGenProviderUrl(DEFAULT_IMAGE_GEN_BASE_URL);
+        };
+        const getImageGenQuotaUrl = () => {
+            const baseUrl = getImageGenBaseUrl();
+            return isDefaultSta1nImageGenRoot(baseUrl) ? joinImageGenUrl(baseUrl, '/api/api/getUser') : '';
+        };
+        const getImageGenStatusUrl = () => {
+            const baseUrl = getImageGenBaseUrl();
+            if (isImageGenDirectEndpoint(baseUrl)) {
+                const parsedUrl = getImageGenUrlObject(baseUrl);
+                if (parsedUrl) return parsedUrl.origin;
+            }
+            return baseUrl;
+        };
+        const getSta1nGenerateUrl = () => {
+            const baseUrl = getImageGenBaseUrl();
+            return isImageGenDirectEndpoint(baseUrl) || getImageGenUrlPath(baseUrl).endsWith('/generate')
+                ? baseUrl
+                : joinImageGenUrl(baseUrl, '/generate');
+        };
+        const getNovelAiGenerateUrl = () => {
+            const baseUrl = getImageGenBaseUrl();
+            return isImageGenDirectEndpoint(baseUrl) ? baseUrl : joinImageGenUrl(baseUrl, '/ai/generate-image');
         };
         normalizeImageGenProviderSettings();
 
@@ -4647,7 +4709,7 @@ ${content}
                 const id = setTimeout(() => controller.abort(), 10000);
                 const startTime = performance.now();
 
-                const baseUrl = getImageGenBaseUrl();
+                const baseUrl = getImageGenStatusUrl();
 
                 await fetch(baseUrl, {
                     method: 'HEAD',
@@ -9651,7 +9713,7 @@ ${content}
 
         const enforceSpecialRules = () => {
             const imageGenToken = settings.imageGenKey.trim();
-            const baseUrl = getImageGenBaseUrl();
+            const sta1nGenerateUrl = getSta1nGenerateUrl();
 
             // 1. NAI画图正则 (统一版本)
             const imageGenRegexName = 'NAI画图正则';
@@ -9706,7 +9768,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 imageGenRegexReplacement = '<div class="nai-pending-image" data-tags="$1" data-artists="' + targetArtists.replace(/"/g, '&quot;') + '" style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(200,200,200,0.15); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;"><div style="color: #999; font-size: 13px; padding: 20px;">🎨 生成图片中...</div></div>';
             } else {
                 // STA1N 代理协议：GET 请求直接加载图片
-                imageGenRegexReplacement = '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + baseUrl + '/generate?tag=$1&token=' + imageGenToken + '&model=' + (settings.imageGenModel || 'nai-diffusion-4-5-full') + '&artist=' + encodedTargetArtists + '&size=' + settings.imageSize + '&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative=' + encodeURIComponent(negativePrompt) + '&nocache=0&noise_schedule=karras"  alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>';
+                imageGenRegexReplacement = '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + sta1nGenerateUrl + '?tag=$1&token=' + imageGenToken + '&model=' + (settings.imageGenModel || 'nai-diffusion-4-5-full') + '&artist=' + encodedTargetArtists + '&size=' + settings.imageSize + '&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative=' + encodeURIComponent(negativePrompt) + '&nocache=0&noise_schedule=karras"  alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>';
             }
 
             const imageGenRegexContent = {
@@ -9840,7 +9902,7 @@ image###生成的提示词###
             if (settings.imageGenProtocol !== 'novelai_native') return;
             const placeholders = document.querySelectorAll('.nai-pending-image:not([data-loaded])');
             if (!placeholders.length) return;
-            const baseUrl = getImageGenBaseUrl();
+            const generateUrl = getNovelAiGenerateUrl();
             const token = settings.imageGenKey.trim();
             if (!token) return;
             const [width, height] = NAI_SIZE_MAP[settings.imageSize] || [832, 1216];
@@ -9852,7 +9914,7 @@ image###生成的提示词###
                 const artists = el.getAttribute('data-artists') || '';
                 const input = [artists, tags].filter(Boolean).join(', ');
                 try {
-                    const resp = await fetch(`${baseUrl}/ai/generate-image`, {
+                    const resp = await fetch(generateUrl, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
