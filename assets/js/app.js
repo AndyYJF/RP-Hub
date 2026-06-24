@@ -10018,11 +10018,19 @@ image###生成的提示词###
             error.statusMessage = message;
             return error;
         };
+        const isPendingImageStatusText = (text) => /(图片加载中|加载中|排队|队列|等待|处理中|生成中|任务已创建|已连接|queued|queue|pending|progress|processing|running|created|connected)/i.test(String(text || ''));
         const getImageResponseStatusMessage = (value) => {
             if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
             const status = String(value.status || value.state || value.type || '').toLowerCase();
-            if (!/(queued|queue|pending|progress|processing|running|created|connected)/i.test(status)) return '';
             const data = value.data ?? value.message ?? value.detail ?? value.info ?? status;
+            const error = typeof value.error === 'string' ? value.error : value.error?.message;
+            const messageText = [data, error, status]
+                .map(item => (item && typeof item === 'object')
+                    ? String(item.message || item.detail || item.status || '')
+                    : String(item || ''))
+                .find(isPendingImageStatusText);
+            if (!isPendingImageStatusText(status) && !messageText) return '';
+            if (messageText) return messageText;
             if (typeof data === 'string') return data;
             if (data && typeof data === 'object') {
                 return String(data.message || data.detail || data.status || status);
@@ -10122,7 +10130,8 @@ image###生成的提示词###
 
             try {
                 return extractImageFromJson(JSON.parse(trimmed));
-            } catch (_) {
+            } catch (e) {
+                if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
                 try {
                     const wholePayload = JSON.parse(trimmed);
                     const statusMessage = getImageResponseStatusMessage(wholePayload);
@@ -10144,7 +10153,9 @@ image###生成的提示词###
                     const statusMessage = getImageResponseStatusMessage(payload);
                     if (statusMessage) statusMessages.push(statusMessage);
                     return extractImageFromJson(payload);
-                } catch (_) {}
+                } catch (e) {
+                    if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
+                }
             }
 
             for (const jsonText of extractJsonValuesFromText(trimmed)) {
@@ -10153,7 +10164,9 @@ image###生成的提示词###
                     const statusMessage = getImageResponseStatusMessage(payload);
                     if (statusMessage) statusMessages.push(statusMessage);
                     return extractImageFromJson(payload);
-                } catch (_) {}
+                } catch (e) {
+                    if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
+                }
             }
 
             const dataUrlMatch = trimmed.match(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/i);
@@ -10165,8 +10178,8 @@ image###生成的提示词###
             const base64ImageMatch = trimmed.match(/(?:iVBOR|\/9j\/|UklGR)[A-Za-z0-9+/=\s]{120,}/);
             if (base64ImageMatch) return imageStringToResult(base64ImageMatch[0]);
 
-            if (statusMessages.length || /"status"\s*:\s*"queued"/i.test(trimmed)) {
-                throw createPendingImageResponseError(statusMessages);
+            if (statusMessages.length || /"status"\s*:\s*"queued"/i.test(trimmed) || isPendingImageStatusText(trimmed)) {
+                throw createPendingImageResponseError(statusMessages.length ? statusMessages : [trimmed.slice(0, 80)]);
             }
 
             throw new Error(`文本响应中未找到图片：${trimmed.slice(0, 160).replace(/\s+/g, ' ')}`);
