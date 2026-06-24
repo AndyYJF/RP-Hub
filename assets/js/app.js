@@ -9898,6 +9898,197 @@ image###生成的提示词###
         const NAI_SIZE_MAP = { '竖图': [832, 1216], '横图': [1216, 832], '方图': [1024, 1024] };
         const NAI_NEGATIVE = 'bad anatomy, bad feet, bad hands, bad proportions, blurry, cloned face, cropped, deformed, disfigured, error, extra arms, extra digit, extra legs, extra limbs, fewer digits, fused fingers, gross proportions, ink eyes, ink hair, jpeg artifacts, long neck, low quality, malformed limbs, missing arms, missing fingers, missing legs, mutated hands, mutation, normal quality, poorly drawn face, poorly drawn hands, signature, text, too many fingers, ugly, watermark, worst quality';
 
+        const getLe16 = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
+        const getLe32 = (bytes, offset) => (
+            bytes[offset]
+            | (bytes[offset + 1] << 8)
+            | (bytes[offset + 2] << 16)
+            | (bytes[offset + 3] << 24)
+        ) >>> 0;
+        const hasBytesAt = (bytes, offset, pattern) => pattern.every((value, index) => bytes[offset + index] === value);
+        const findPngBytes = (bytes) => {
+            const pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            let pngStart = -1;
+            for (let i = 0; i <= bytes.length - pngSignature.length; i++) {
+                if (hasBytesAt(bytes, i, pngSignature)) {
+                    pngStart = i;
+                    break;
+                }
+            }
+            if (pngStart < 0) return null;
+            for (let i = pngStart + pngSignature.length + 4; i <= bytes.length - 8; i++) {
+                if (bytes[i] === 0x49 && bytes[i + 1] === 0x45 && bytes[i + 2] === 0x4E && bytes[i + 3] === 0x44) {
+                    return bytes.slice(pngStart, i + 8);
+                }
+            }
+            return bytes.slice(pngStart);
+        };
+        const inflateZipBytes = async (data, method) => {
+            if (method === 0) return data;
+            if (method !== 8) throw new Error(`Unsupported ZIP compression method: ${method}`);
+            if (typeof DecompressionStream === 'undefined') {
+                throw new Error('当前浏览器不支持解压 ZIP 图片响应，请升级浏览器或改用代理直出图片');
+            }
+            const inflatedStream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+            return new Uint8Array(await new Response(inflatedStream).arrayBuffer());
+        };
+        const extractPngFromZipBytes = async (bytes) => {
+            let eocdOffset = -1;
+            for (let i = bytes.length - 22; i >= 0; i--) {
+                if (hasBytesAt(bytes, i, [0x50, 0x4B, 0x05, 0x06])) {
+                    eocdOffset = i;
+                    break;
+                }
+            }
+
+            const entries = [];
+            if (eocdOffset >= 0) {
+                const entryCount = getLe16(bytes, eocdOffset + 10);
+                let offset = getLe32(bytes, eocdOffset + 16);
+                const decoder = new TextDecoder();
+                for (let i = 0; i < entryCount && offset + 46 <= bytes.length; i++) {
+                    if (!hasBytesAt(bytes, offset, [0x50, 0x4B, 0x01, 0x02])) break;
+                    const method = getLe16(bytes, offset + 10);
+                    const compressedSize = getLe32(bytes, offset + 20);
+                    const fileNameLength = getLe16(bytes, offset + 28);
+                    const extraLength = getLe16(bytes, offset + 30);
+                    const commentLength = getLe16(bytes, offset + 32);
+                    const localHeaderOffset = getLe32(bytes, offset + 42);
+                    const nameBytes = bytes.slice(offset + 46, offset + 46 + fileNameLength);
+                    entries.push({
+                        method,
+                        compressedSize,
+                        localHeaderOffset,
+                        name: decoder.decode(nameBytes),
+                    });
+                    offset += 46 + fileNameLength + extraLength + commentLength;
+                }
+            }
+
+            if (!entries.length) {
+                for (let offset = 0; offset + 30 <= bytes.length;) {
+                    if (!hasBytesAt(bytes, offset, [0x50, 0x4B, 0x03, 0x04])) break;
+                    const method = getLe16(bytes, offset + 8);
+                    const compressedSize = getLe32(bytes, offset + 18);
+                    const fileNameLength = getLe16(bytes, offset + 26);
+                    const extraLength = getLe16(bytes, offset + 28);
+                    if (!compressedSize) break;
+                    const dataStart = offset + 30 + fileNameLength + extraLength;
+                    entries.push({ method, compressedSize, localHeaderOffset: offset, name: '' });
+                    offset = dataStart + compressedSize;
+                }
+            }
+
+            const sortedEntries = entries.sort((a, b) => {
+                const aLooksPng = /\.png$/i.test(a.name || '') ? 0 : 1;
+                const bLooksPng = /\.png$/i.test(b.name || '') ? 0 : 1;
+                return aLooksPng - bLooksPng;
+            });
+
+            for (const entry of sortedEntries) {
+                const localOffset = entry.localHeaderOffset;
+                if (localOffset + 30 > bytes.length || !hasBytesAt(bytes, localOffset, [0x50, 0x4B, 0x03, 0x04])) continue;
+                const fileNameLength = getLe16(bytes, localOffset + 26);
+                const extraLength = getLe16(bytes, localOffset + 28);
+                const dataStart = localOffset + 30 + fileNameLength + extraLength;
+                const compressedData = bytes.slice(dataStart, dataStart + entry.compressedSize);
+                const inflatedData = await inflateZipBytes(compressedData, entry.method);
+                const pngBytes = findPngBytes(inflatedData);
+                if (pngBytes) return pngBytes;
+            }
+
+            return null;
+        };
+        const base64ToBlob = (value, mimeType = 'image/png') => {
+            const binary = atob(value);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: mimeType });
+        };
+        const extractImageFromJson = (payload) => {
+            const seen = new Set();
+            const findImageString = (value) => {
+                if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (/^data:image\//i.test(trimmed)
+                        || /^https?:\/\//i.test(trimmed)
+                        || /^[A-Za-z0-9+/=]{120,}$/.test(trimmed)) {
+                        return trimmed;
+                    }
+                    return '';
+                }
+                if (!value || typeof value !== 'object' || seen.has(value)) return '';
+                seen.add(value);
+                if (Array.isArray(value)) {
+                    for (const item of value) {
+                        const found = findImageString(item);
+                        if (found) return found;
+                    }
+                    return '';
+                }
+                const preferredKeys = ['image', 'images', 'url', 'urls', 'data', 'output', 'result', 'base64', 'b64_json'];
+                for (const key of preferredKeys) {
+                    if (Object.prototype.hasOwnProperty.call(value, key)) {
+                        const found = findImageString(value[key]);
+                        if (found) return found;
+                    }
+                }
+                for (const item of Object.values(value)) {
+                    const found = findImageString(item);
+                    if (found) return found;
+                }
+                return '';
+            };
+
+            const imageValue = findImageString(payload);
+            if (!imageValue) {
+                const message = payload?.error?.message || payload?.error || payload?.message || 'JSON response does not contain an image';
+                throw new Error(String(message));
+            }
+            if (/^data:image\//i.test(imageValue)) {
+                const match = imageValue.match(/^data:(image\/[^;]+);base64,(.*)$/i);
+                if (!match) return { url: imageValue };
+                return { blob: base64ToBlob(match[2], match[1]) };
+            }
+            if (/^https?:\/\//i.test(imageValue)) return { url: imageValue };
+            return { blob: base64ToBlob(imageValue.replace(/^data:[^,]+,/, '')) };
+        };
+        const extractNaiImageResult = async (resp) => {
+            const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+            if (contentType.includes('application/json')) {
+                return extractImageFromJson(await resp.json());
+            }
+            if (contentType.startsWith('image/')) {
+                return { blob: await resp.blob() };
+            }
+
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            const firstNonWhitespace = bytes.find(value => ![9, 10, 13, 32].includes(value));
+            if (firstNonWhitespace === 0x7B || firstNonWhitespace === 0x5B) {
+                const text = new TextDecoder().decode(bytes);
+                return extractImageFromJson(JSON.parse(text));
+            }
+            if (hasBytesAt(bytes, 0, [0xFF, 0xD8, 0xFF])) {
+                return { blob: new Blob([bytes], { type: 'image/jpeg' }) };
+            }
+            if (hasBytesAt(bytes, 0, [0x52, 0x49, 0x46, 0x46]) && hasBytesAt(bytes, 8, [0x57, 0x45, 0x42, 0x50])) {
+                return { blob: new Blob([bytes], { type: 'image/webp' }) };
+            }
+
+            const directPngBytes = findPngBytes(bytes);
+            if (directPngBytes) {
+                return { blob: new Blob([directPngBytes], { type: 'image/png' }) };
+            }
+
+            if (hasBytesAt(bytes, 0, [0x50, 0x4B, 0x03, 0x04])) {
+                const pngBytes = await extractPngFromZipBytes(bytes);
+                if (pngBytes) return { blob: new Blob([pngBytes], { type: 'image/png' }) };
+            }
+
+            const snippet = new TextDecoder().decode(bytes.slice(0, 160)).replace(/\s+/g, ' ').trim();
+            throw new Error(`无法从生图响应中提取图片${snippet ? `：${snippet}` : ''}`);
+        };
+
         const processPendingNaiImages = async () => {
             if (settings.imageGenProtocol !== 'novelai_native') return;
             const placeholders = document.querySelectorAll('.nai-pending-image:not([data-loaded])');
@@ -9941,21 +10132,12 @@ image###生成的提示词###
                             }
                         })
                     });
-                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                    // NovelAI returns a zip containing one PNG; extract PNG by signature
-                    const buf = await resp.arrayBuffer();
-                    const bytes = new Uint8Array(buf);
-                    let pngStart = -1;
-                    for (let i = 0; i < bytes.length - 4; i++) {
-                        if (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4E && bytes[i + 3] === 0x47) {
-                            pngStart = i;
-                            break;
-                        }
+                    if (!resp.ok) {
+                        const detail = await resp.text().catch(() => '');
+                        throw new Error(`HTTP ${resp.status}${detail ? `: ${detail.slice(0, 180)}` : ''}`);
                     }
-                    if (pngStart < 0) throw new Error('PNG not found in response');
-                    const pngBlob = new Blob([bytes.slice(pngStart)], { type: 'image/png' });
-                    const url = URL.createObjectURL(pngBlob);
-                    // Replace placeholder content with img
+                    const imageResult = await extractNaiImageResult(resp);
+                    const url = imageResult.url || URL.createObjectURL(imageResult.blob);
                     el.innerHTML = `<img src="${url}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
                     el.style.background = 'rgba(255,255,255,0.32)';
                     el.style.minHeight = '';
