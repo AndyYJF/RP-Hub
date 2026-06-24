@@ -10225,6 +10225,13 @@ image###生成的提示词###
             }
 
             const snippet = new TextDecoder().decode(bytes.slice(0, 160)).replace(/\s+/g, ' ').trim();
+            if (textParseError?.isPendingImageResponse) throw textParseError;
+            if (isPendingImageStatusText(textParseError?.message)) {
+                throw createPendingImageResponseError([textParseError.message]);
+            }
+            if (isPendingImageStatusText(snippet)) {
+                throw createPendingImageResponseError([snippet]);
+            }
             const detail = textParseError?.message || snippet;
             throw new Error(`无法从生图响应中提取图片${detail ? `：${detail}` : ''}`);
         };
