@@ -10005,6 +10005,30 @@ image###生成的提示词###
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             return new Blob([bytes], { type: mimeType });
         };
+        const escapeNaiStatusHtml = (text) => String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+        const createPendingImageResponseError = (messages = []) => {
+            const message = messages.filter(Boolean).slice(-1)[0] || '生图任务仍在排队';
+            const error = new Error(message);
+            error.isPendingImageResponse = true;
+            error.statusMessage = message;
+            return error;
+        };
+        const getImageResponseStatusMessage = (value) => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+            const status = String(value.status || value.state || value.type || '').toLowerCase();
+            if (!/(queued|queue|pending|progress|processing|running|created|connected)/i.test(status)) return '';
+            const data = value.data ?? value.message ?? value.detail ?? value.info ?? status;
+            if (typeof data === 'string') return data;
+            if (data && typeof data === 'object') {
+                return String(data.message || data.detail || data.status || status);
+            }
+            return String(data || status);
+        };
         const imageStringToResult = (imageValue) => {
             if (/^data:image\//i.test(imageValue)) {
                 const match = imageValue.match(/^data:(image\/[^;]+);base64,(.*)$/is);
@@ -10094,10 +10118,17 @@ image###生成的提示词###
         const tryExtractImageFromText = (text) => {
             const trimmed = String(text || '').trim();
             if (!trimmed) throw new Error('Empty image response');
+            const statusMessages = [];
 
             try {
                 return extractImageFromJson(JSON.parse(trimmed));
-            } catch (_) {}
+            } catch (_) {
+                try {
+                    const wholePayload = JSON.parse(trimmed);
+                    const statusMessage = getImageResponseStatusMessage(wholePayload);
+                    if (statusMessage) statusMessages.push(statusMessage);
+                } catch (_) {}
+            }
 
             const lines = trimmed
                 .split(/\r?\n/)
@@ -10109,13 +10140,19 @@ image###生成的提示词###
             for (const line of lines) {
                 if (!/^[{[]/.test(line)) continue;
                 try {
-                    return extractImageFromJson(JSON.parse(line));
+                    const payload = JSON.parse(line);
+                    const statusMessage = getImageResponseStatusMessage(payload);
+                    if (statusMessage) statusMessages.push(statusMessage);
+                    return extractImageFromJson(payload);
                 } catch (_) {}
             }
 
             for (const jsonText of extractJsonValuesFromText(trimmed)) {
                 try {
-                    return extractImageFromJson(JSON.parse(jsonText));
+                    const payload = JSON.parse(jsonText);
+                    const statusMessage = getImageResponseStatusMessage(payload);
+                    if (statusMessage) statusMessages.push(statusMessage);
+                    return extractImageFromJson(payload);
                 } catch (_) {}
             }
 
@@ -10127,6 +10164,10 @@ image###生成的提示词###
 
             const base64ImageMatch = trimmed.match(/(?:iVBOR|\/9j\/|UklGR)[A-Za-z0-9+/=\s]{120,}/);
             if (base64ImageMatch) return imageStringToResult(base64ImageMatch[0]);
+
+            if (statusMessages.length || /"status"\s*:\s*"queued"/i.test(trimmed)) {
+                throw createPendingImageResponseError(statusMessages);
+            }
 
             throw new Error(`文本响应中未找到图片：${trimmed.slice(0, 160).replace(/\s+/g, ' ')}`);
         };
@@ -10184,6 +10225,7 @@ image###生成的提示词###
             if (!token) return;
             const [width, height] = NAI_SIZE_MAP[settings.imageSize] || [832, 1216];
             const model = settings.imageGenModel || 'nai-diffusion-4-5-full';
+            const maxQueueRetries = 6;
 
             for (const el of placeholders) {
                 el.setAttribute('data-loaded', '1'); // mark as processing
@@ -10229,6 +10271,23 @@ image###生成的提示词###
                     el.style.minHeight = '';
                     el.style.minWidth = '';
                 } catch (e) {
+                    if (e?.isPendingImageResponse) {
+                        const retryCount = Number.parseInt(el.getAttribute('data-retry-count') || '0', 10) || 0;
+                        const nextRetryCount = retryCount + 1;
+                        const retryDelayMs = Math.min(30000, 5000 + retryCount * 5000);
+                        const retryText = nextRetryCount <= maxQueueRetries
+                            ? `${Math.round(retryDelayMs / 1000)} 秒后自动重试`
+                            : '队列仍未返回图片，请稍后重新生成';
+                        el.setAttribute('data-retry-count', String(nextRetryCount));
+                        el.innerHTML = `<div style="color: #666; font-size: 13px; padding: 20px; text-align: center; line-height: 1.6;"><div>${escapeNaiStatusHtml(e.statusMessage || '生图任务仍在排队')}</div><div style="font-size: 12px; color: #999;">${escapeNaiStatusHtml(retryText)}</div></div>`;
+                        if (nextRetryCount <= maxQueueRetries) {
+                            window.setTimeout(() => {
+                                el.removeAttribute('data-loaded');
+                                processPendingNaiImages();
+                            }, retryDelayMs);
+                        }
+                        continue;
+                    }
                     console.error('NAI image gen failed:', e);
                     el.innerHTML = `<div style="color: #c00; font-size: 13px; padding: 20px;">图片生成失败: ${e.message}</div>`;
                 }
