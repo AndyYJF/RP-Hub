@@ -1,0 +1,21 @@
+# 后端运行时数据（含用户数据、密码哈希，绝对不能提交）
+server/data/
+server/.env
+
+# Node 依赖
+server/node_modules/
+
+# 环境变量
+.env
+
+# 日志
+*.log
+*.err
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/

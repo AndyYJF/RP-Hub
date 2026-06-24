@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Roleplay Hub · 账号</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script>
+tailwind.config = {
+    theme: { extend: { colors: { primary: { 50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a8fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a' } } } }
+};
+</script>
+<style>
+[v-cloak]{display:none}
+body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","Noto Sans SC",Arial,sans-serif}
+.auth-card{background:#fff;border:1px solid rgba(0,0,0,0.06);box-shadow:0 10px 40px -10px rgba(0,0,0,0.1)}
+.brand-rp{color:#2563eb;font-weight:800}.brand-hub{color:#111827;font-weight:800}
+.input{width:100%;padding:.7rem .9rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.95rem;transition:border-color .15s,box-shadow .15s;background:#fff}
+.input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+.btn{width:100%;padding:.75rem;border-radius:.5rem;font-weight:600;cursor:pointer;transition:all .15s;border:none}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}.btn-primary:disabled{opacity:.6;cursor:not-allowed}
+.btn-ghost{background:transparent;color:#6b7280;border:1px solid #e5e7eb}.btn-ghost:hover{background:#f9fafb}
+.err{color:#dc2626;font-size:.85rem}.ok{color:#16a34a;font-size:.85rem}
+.tab{flex:1;text-align:center;padding:.6rem;cursor:pointer;color:#6b7280;border-bottom:2px solid transparent;font-weight:500}
+.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+</style>
+</head>
+<body class="bg-gradient-to-br from-primary-50 via-gray-50 to-gray-100 min-h-screen flex items-center justify-center p-4">
+<div id="app" v-cloak class="w-full max-w-md">
+    <div class="auth-card rounded-2xl p-7">
+        <div class="text-center mb-6">
+            <div class="text-3xl mb-1"><span class="brand-rp">RP</span><span class="brand-hub">HUB</span></div>
+            <p class="text-gray-500 text-sm">{{ isServerMode ? '已登录服务端' : '云端账号 / 多用户' }}</p>
+        </div>
+
+        <!-- 已登录视图 -->
+        <div v-if="sync.isLoggedIn">
+            <div class="bg-primary-50 rounded-xl p-4 mb-4 flex items-center gap-3">
+                <div class="w-12 h-12 rounded-full bg-primary-600 text-white flex items-center justify-center text-lg font-bold">{{ avatarText }}</div>
+                <div class="flex-1 min-w-0">
+                    <div class="font-semibold text-gray-900 truncate">{{ sync.user.username }}</div>
+                    <div class="text-xs text-gray-500 truncate">{{ sync.user.role === 'admin' ? '管理员' : '普通用户' }} · {{ sync.user.displayName || '未设置昵称' }}</div>
+                </div>
+            </div>
+
+            <div class="space-y-2 mb-4">
+                <label class="flex items-center justify-between text-sm">
+                    <span>服务端模式</span>
+                    <button @click="toggleMode" :class="sync.isServerMode ? 'bg-primary-600' : 'bg-gray-300'" class="relative w-11 h-6 rounded-full transition-colors">
+                        <span :class="sync.isServerMode ? 'translate-x-5' : 'translate-x-0'" class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow"></span>
+                    </button>
+                </label>
+                <p class="text-xs text-gray-500">{{ sync.isServerMode ? '数据将同步到服务端，可在不同设备间共享' : '仅使用本地存储，不会上传任何数据' }}</p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+                <button class="btn btn-ghost" @click="goApp">进入应用</button>
+                <button class="btn btn-ghost" @click="goAdmin" v-if="sync.isAdmin">后台管理</button>
+                <button class="btn btn-ghost text-red-600 col-span-2" @click="doLogout">退出登录</button>
+            </div>
+        </div>
+
+        <!-- 登录/注册视图 -->
+        <div v-else>
+            <div class="flex border-b mb-5">
+                <div class="tab" :class="{active: tab==='login'}" @click="tab='login';err=''">登录</div>
+                <div class="tab" :class="{active: tab==='register'}" @click="tab='register';err=''">注册</div>
+            </div>
+
+            <form @submit.prevent="submit" class="space-y-3">
+                <div>
+                    <label class="block text-sm text-gray-600 mb-1">用户名</label>
+                    <input class="input" v-model.trim="username" autocomplete="username" required minlength="2" maxlength="32" placeholder="2-32 个字符">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-600 mb-1">密码</label>
+                    <input class="input" v-model="password" :type="showPwd?'text':'password'" :autocomplete="tab==='login'?'current-password':'new-password'" required minlength="6" maxlength="128" placeholder="至少 6 位">
+                    <button type="button" class="text-xs text-gray-400 mt-1" @click="showPwd=!showPwd">{{ showPwd ? '隐藏' : '显示' }}</button>
+                </div>
+                <p v-if="err" class="err">{{ err }}</p>
+                <p v-if="ok" class="ok">{{ ok }}</p>
+                <button class="btn btn-primary" :disabled="loading" type="submit">
+                    <span v-if="loading">处理中...</span>
+                    <span v-else>{{ tab === 'login' ? '登录' : '注册并登录' }}</span>
+                </button>
+            </form>
+
+            <div class="mt-6 pt-4 border-t border-gray-100">
+                <label class="block text-sm text-gray-600 mb-1">服务器地址</label>
+                <input class="input" v-model.trim="baseUrlInput" placeholder="https://your-server.com">
+                <p class="text-xs text-gray-400 mt-1">未填写服务器地址时只能以本地模式使用。点击下方按钮以游客身份进入。</p>
+                <button class="btn btn-ghost mt-3" @click="goAppLocal">以本地模式进入</button>
+            </div>
+        </div>
+    </div>
+    <p class="text-center text-xs text-gray-400 mt-4">Roleplay Hub · CC BY-NC 4.0</p>
+</div>
+
+<script src="assets/js/server-sync.js"></script>
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+const sync = window.RPHubServerSync;
+createApp({
+    setup() {
+        const tab = ref('login');
+        const username = ref('');
+        const password = ref('');
+        const showPwd = ref(false);
+        const err = ref('');
+        const ok = ref('');
+        const loading = ref(false);
+        const baseUrlInput = ref(sync.baseUrl || location.origin);
+
+        const avatarText = computed(() => (sync.user?.username || '?').slice(0, 1).toUpperCase());
+
+        async function submit() {
+            err.value = ''; ok.value = '';
+            if (!username.value || !password.value) { err.value = '请输入用户名和密码'; return; }
+            const url = baseUrlInput.value.trim();
+            if (!url) { err.value = '请填写服务器地址'; return; }
+            sync.setBaseUrl(url);
+            loading.value = true;
+            try {
+                if (tab.value === 'login') {
+                    const u = await sync.login(username.value, password.value);
+                    ok.value = '欢迎回来，' + u.username;
+                } else {
+                    const u = await sync.register(username.value, password.value);
+                    ok.value = '注册成功，已自动登录';
+                }
+                sync.setMode('server');
+                setTimeout(() => { location.href = 'index.html'; }, 600);
+            } catch (e) {
+                err.value = e.message || '操作失败';
+            } finally {
+                loading.value = false;
+            }
+        }
+
+        async function doLogout() {
+            await sync.logout();
+            tab.value = 'login';
+            err.value = ''; ok.value = '已退出登录';
+            setTimeout(() => ok.value = '', 2000);
+        }
+
+        function goApp() { location.href = 'index.html'; }
+        function goAppLocal() {
+            sync.setBaseUrl(baseUrlInput.value.trim());
+            sync.setMode('local');
+            location.href = 'index.html';
+        }
+        function goAdmin() { location.href = 'admin.html'; }
+
+        function toggleMode() {
+            sync.setMode(sync.isServerMode ? 'local' : 'server');
+        }
+
+        onMounted(async () => {
+            if (sync.baseUrl) baseUrlInput.value = sync.baseUrl;
+            // Validate token on load
+            if (sync.isLoggedIn) {
+                const u = await sync.fetchMe();
+                if (!u) { err.value = '会话已过期，请重新登录'; }
+            }
+        });
+
+        return {
+            sync, tab, username, password, showPwd, err, ok, loading, baseUrlInput,
+            avatarText, isServerMode: sync.isServerMode,
+            submit, doLogout, goApp, goAppLocal, goAdmin, toggleMode,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

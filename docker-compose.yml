@@ -1,0 +1,37 @@
+services:
+  rphub:
+    build: .
+    image: rphub:latest
+    container_name: rphub
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # === 必改：JWT 密钥 ===
+      JWT_SECRET: ${JWT_SECRET:-please-change-to-a-long-random-string}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-please-change-this-too}
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 30d
+
+      # === 管理员初始账号 ===
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-please-change-immediately}
+
+      # 是否允许自由注册（false 则只能由管理员在后台创建账号）
+      ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
+
+      # 数据库路径（容器内）
+      DB_PATH: /data/rphub.db
+
+      # 前端静态目录（由后端托管）
+      STATIC_DIR: /public
+
+      # CORS 来源（留空表示同源，不需要跨域；如前端独立部署可设为 https://your-frontend.example.com）
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    volumes:
+      - rphub-data:/data
+      # 可选：把日志挂出来
+      # - ./logs:/app/logs
+
+volumes:
+  rphub-data:

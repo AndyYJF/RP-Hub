@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roleplay Hub · 后台管理</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script>
+tailwind.config = {
+    theme: { extend: { colors: { primary: { 50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a8fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a' } } } }
+};
+</script>
+<style>
+[v-cloak]{display:none}
+body{font-family:ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;background:#f3f4f6}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:.75rem;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.input{width:100%;padding:.5rem .7rem;border:1px solid #d1d5db;border-radius:.375rem;font-size:.9rem;background:#fff}
+.input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.btn{padding:.5rem .9rem;border-radius:.375rem;font-weight:500;font-size:.875rem;cursor:pointer;border:none;transition:.15s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-ghost{background:transparent;color:#4b5563;border:1px solid #e5e7eb}.btn-ghost:hover{background:#f9fafb}
+.btn-sm{padding:.25rem .55rem;font-size:.75rem}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+.tag{display:inline-block;padding:.1rem .55rem;border-radius:9999px;font-size:.7rem;font-weight:500}
+.tag-active{background:#dcfce7;color:#16a34a}
+.tag-banned{background:#fee2e2;color:#dc2626}
+.tag-disabled{background:#fef3c7;color:#d97706}
+.tag-admin{background:#dbeafe;color:#2563eb}
+.tag-user{background:#f3f4f6;color:#4b5563}
+.tag-pending{background:#fef3c7;color:#d97706}
+.tag-approved{background:#dcfce7;color:#16a34a}
+.tag-rejected{background:#fee2e2;color:#dc2626}
+.tag-offline{background:#e5e7eb;color:#4b5563}
+.nav-item{display:flex;align-items:center;gap:.6rem;padding:.7rem .9rem;border-radius:.5rem;cursor:pointer;color:#4b5563;font-size:.9rem;transition:.15s}
+.nav-item:hover{background:#e5e7eb}
+.nav-item.active{background:#2563eb;color:#fff}
+table{width:100%;border-collapse:collapse}
+th,td{padding:.6rem .75rem;text-align:left;font-size:.875rem;border-bottom:1px solid #f3f4f6}
+th{background:#f9fafb;font-weight:600;color:#374151}
+tr:hover td{background:#fafbfc}
+.stat-card{padding:1.2rem;border-radius:.75rem;background:#fff;border:1px solid #e5e7eb}
+.stat-num{font-size:1.75rem;font-weight:700;color:#111827}
+.stat-label{font-size:.75rem;color:#6b7280;margin-top:.2rem}
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:640px;width:92%;max-height:85vh;overflow:auto}
+</style>
+</head>
+<body>
+<div id="app" v-cloak class="min-h-screen flex">
+    <!-- 侧边栏 -->
+    <aside class="w-60 bg-white border-r border-gray-200 p-3 flex flex-col">
+        <div class="px-2 py-3 mb-2 border-b">
+            <div class="text-xl font-bold"><span class="text-primary-600">RP</span>Hub</div>
+            <div class="text-xs text-gray-500 mt-1">后台管理</div>
+        </div>
+        <nav class="flex-1 space-y-1">
+            <div class="nav-item" :class="{active:view==='stats'}" @click="setView('stats')">📊 系统统计</div>
+            <div class="nav-item" :class="{active:view==='users'}" @click="setView('users')">👥 用户管理</div>
+            <div class="nav-item" :class="{active:view==='library'}" @click="setView('library')">🎴 角色卡审核</div>
+            <div class="nav-item" :class="{active:view==='announcements'}" @click="setView('announcements')">📢 公告管理</div>
+            <div class="nav-item" :class="{active:view==='apiusage'}" @click="setView('apiusage')">⚡ API 用量</div>
+            <div class="nav-item" :class="{active:view==='audit'}" @click="setView('audit')">📜 审计日志</div>
+        </nav>
+        <div class="border-t pt-3 space-y-1">
+            <div class="nav-item" @click="goApp">← 返回应用</div>
+            <div class="nav-item" @click="doLogout">退出登录</div>
+        </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="flex-1 p-6 overflow-auto">
+        <div v-if="!sync.isAdmin" class="card p-12 text-center">
+            <p class="text-gray-500 mb-3">需要管理员账号登录后才能访问后台</p>
+            <button class="btn btn-primary" @click="goLogin">前往登录</button>
+        </div>
+
+        <template v-else>
+        <!-- 统计 -->
+        <section v-if="view==='stats'">
+            <h2 class="text-xl font-bold mb-4">系统统计 <select class="input ml-2 inline-block w-auto text-sm" v-model="statsRange" @change="loadStats">
+                <option value="24h">近 24 小时</option>
+                <option value="7d">近 7 天</option>
+                <option value="30d">近 30 天</option>
+                <option value="all">全部</option>
+            </select></h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" v-if="stats">
+                <div class="stat-card"><div class="stat-num">{{ stats.users.total }}</div><div class="stat-label">总用户</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.users.active }}</div><div class="stat-label">活跃用户</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.users.newUsers }}</div><div class="stat-label">时段新增</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.users.activeInRange }}</div><div class="stat-label">时段登录</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.cards.total }}</div><div class="stat-label">角色卡总数</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.cards.pending }}</div><div class="stat-label">待审核</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.cards.approved }}</div><div class="stat-label">已上架</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.cards.totalDownloads }}</div><div class="stat-label">总下载</div></div>
+            </div>
+            <div class="card p-4" v-if="stats && stats.series.length">
+                <h3 class="text-sm font-semibold mb-3 text-gray-700">活跃趋势（每日登录 / 新注册）</h3>
+                <div class="flex items-end gap-1 h-32">
+                    <div v-for="(s,i) in stats.series" :key="i" class="flex-1 flex flex-col items-center justify-end group relative">
+                        <div class="w-full bg-primary-200 hover:bg-primary-400 rounded-t" :style="{height:(s.logins/maxLogins*100)+'%'}" :title="`登录 ${s.logins} / 新增 ${s.newUsers}`"></div>
+                        <div class="absolute -top-8 hidden group-hover:block bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10">{{ formatDate(s.date) }}<br>登录 {{ s.logins }} · 新增 {{ s.newUsers }}</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 用户管理 -->
+        <section v-if="view==='users'">
+            <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
+                <h2 class="text-xl font-bold">用户管理</h2>
+                <div class="flex gap-2">
+                    <input class="input w-48" v-model="userFilter.q" placeholder="搜索用户名" @keyup.enter="loadUsers(1)">
+                    <select class="input w-32" v-model="userFilter.status" @change="loadUsers(1)">
+                        <option value="">全部状态</option>
+                        <option value="active">正常</option><option value="banned">封禁</option><option value="disabled">停用</option>
+                    </select>
+                    <select class="input w-32" v-model="userFilter.role" @change="loadUsers(1)">
+                        <option value="">全部角色</option><option value="user">用户</option><option value="admin">管理员</option>
+                    </select>
+                    <button class="btn btn-primary" @click="openCreateUser">+ 新建</button>
+                </div>
+            </div>
+            <div class="card overflow-auto">
+                <table>
+                    <thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>注册时间</th><th>最近登录</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr v-for="u in users.list" :key="u.id">
+                            <td>{{ u.id }}</td>
+                            <td class="font-medium">{{ u.username }}</td>
+                            <td>{{ u.displayName || '-' }}</td>
+                            <td><span class="tag" :class="u.role==='admin'?'tag-admin':'tag-user'">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
+                            <td><span class="tag" :class="'tag-'+u.status">{{ statusLabel(u.status) }}</span></td>
+                            <td class="text-gray-500 text-xs">{{ formatDateTime(u.createdAt) }}</td>
+                            <td class="text-gray-500 text-xs">{{ u.lastLoginAt?formatDateTime(u.lastLoginAt):'从未' }}</td>
+                            <td>
+                                <button class="btn btn-ghost btn-sm" @click="openEditUser(u)">编辑</button>
+                                <button class="btn btn-sm" :class="u.status==='active'?'btn-danger':'btn-primary'" @click="toggleBan(u)" v-if="u.id!==sync.user.id">{{ u.status==='active'?'封禁':'解封' }}</button>
+                                <button class="btn btn-danger btn-sm" @click="deleteUser(u)" v-if="u.id!==sync.user.id">删</button>
+                            </td>
+                        </tr>
+                        <tr v-if="!users.list.length"><td colspan="8" class="text-center text-gray-400 py-6">暂无数据</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-3 text-sm text-gray-600">
+                <span>共 {{ users.total }} 条 · 第 {{ users.page }} / {{ Math.ceil(users.total/users.pageSize) || 1 }} 页</span>
+                <div class="flex gap-2">
+                    <button class="btn btn-ghost btn-sm" :disabled="users.page<=1" @click="loadUsers(users.page-1)">上一页</button>
+                    <button class="btn btn-ghost btn-sm" :disabled="users.page*users.pageSize>=users.total" @click="loadUsers(users.page+1)">下一页</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 角色卡审核 -->
+        <section v-if="view==='library'">
+            <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
+                <h2 class="text-xl font-bold">角色卡审核</h2>
+                <div class="flex gap-2">
+                    <select class="input w-32" v-model="libFilter.status" @change="loadLibrary(1)">
+                        <option value="">全部</option>
+                        <option value="pending">待审核</option><option value="approved">已上架</option>
+                        <option value="rejected">已拒绝</option><option value="offline">已下架</option>
+                    </select>
+                </div>
+            </div>
+            <div class="card overflow-auto">
+                <table>
+                    <thead><tr><th>ID</th><th>名称</th><th>作者</th><th>状态</th><th>下载</th><th>提交时间</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr v-for="c in lib.list" :key="c.id">
+                            <td>{{ c.id }}</td>
+                            <td class="font-medium">{{ c.name || '(未命名)' }}</td>
+                            <td class="text-xs">{{ c.authorName || '-' }}</td>
+                            <td><span class="tag" :class="'tag-'+c.status">{{ cardStatusLabel(c.status) }}</span></td>
+                            <td>{{ c.downloadCount }}</td>
+                            <td class="text-gray-500 text-xs">{{ formatDateTime(c.createdAt) }}</td>
+                            <td>
+                                <button class="btn btn-ghost btn-sm" @click="previewCard(c)">预览</button>
+                                <button class="btn btn-primary btn-sm" @click="reviewCard(c,'approved','')" v-if="c.status!=='approved'">通过</button>
+                                <button class="btn btn-danger btn-sm" @click="reviewCardWithNote(c,'rejected')">拒绝</button>
+                                <button class="btn btn-ghost btn-sm" @click="reviewCard(c,'offline','')" v-if="c.status==='approved'">下架</button>
+                            </td>
+                        </tr>
+                        <tr v-if="!lib.list.length"><td colspan="7" class="text-center text-gray-400 py-6">暂无数据</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-3 text-sm text-gray-600">
+                <span>共 {{ lib.total }} 条 · 第 {{ lib.page }} / {{ Math.ceil(lib.total/lib.pageSize) || 1 }} 页</span>
+                <div class="flex gap-2">
+                    <button class="btn btn-ghost btn-sm" :disabled="lib.page<=1" @click="loadLibrary(lib.page-1)">上一页</button>
+                    <button class="btn btn-ghost btn-sm" :disabled="lib.page*lib.pageSize>=lib.total" @click="loadLibrary(lib.page+1)">下一页</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 公告管理 -->
+        <section v-if="view==='announcements'">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">公告管理</h2>
+                <button class="btn btn-primary" @click="openAnnouncementEditor()">+ 新建公告</button>
+            </div>
+            <div class="card overflow-auto">
+                <table>
+                    <thead><tr><th>标题</th><th>类型</th><th>状态</th><th>置顶</th><th>创建时间</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr v-for="a in announcements" :key="a.id">
+                            <td class="font-medium">{{ a.title }}</td>
+                            <td><span class="tag tag-user">{{ annTypeLabel(a.type) }}</span></td>
+                            <td><span class="tag" :class="a.active?'tag-active':'tag-offline'">{{ activeLabel(a.active) }}</span></td>
+                            <td>{{ a.pinned?'是':'否' }}</td>
+                            <td class="text-gray-500 text-xs">{{ formatDateTime(a.createdAt) }}</td>
+                            <td>
+                                <button class="btn btn-ghost btn-sm" @click="openAnnouncementEditor(a)">编辑</button>
+                                <button class="btn btn-danger btn-sm" @click="deleteAnnouncement(a)">删</button>
+                            </td>
+                        </tr>
+                        <tr v-if="!announcements.length"><td colspan="6" class="text-center text-gray-400 py-6">暂无公告</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- API 用量 -->
+        <section v-if="view==='apiusage'">
+            <h2 class="text-xl font-bold mb-4">API 用量 <select class="input ml-2 inline-block w-auto text-sm" v-model="usageRange" @change="loadUsageSummary">
+                <option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option>
+            </select></h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" v-if="usageSummary">
+                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.requests }}</div><div class="stat-label">请求次数</div></div>
+                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.totalTokens }}</div><div class="stat-label">总 Tokens</div></div>
+                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.promptTokens }}</div><div class="stat-label">输入 Tokens</div></div>
+                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.completionTokens }}</div><div class="stat-label">输出 Tokens</div></div>
+            </div>
+            <div class="card p-4" v-if="usageSummary && usageSummary.byUser.length">
+                <h3 class="text-sm font-semibold mb-3 text-gray-700">用户用量 Top 20</h3>
+                <table><thead><tr><th>用户</th><th>请求</th><th>Tokens</th></tr></thead>
+                <tbody><tr v-for="u in usageSummary.byUser" :key="u.userId"><td>{{ u.username || '#'+u.userId }}</td><td>{{ u.requests }}</td><td>{{ u.totalTokens }}</td></tr></tbody></table>
+            </div>
+        </section>
+
+        <!-- 审计日志 -->
+        <section v-if="view==='audit'">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">审计日志</h2>
+                <select class="input w-48" v-model="auditFilter.action" @change="loadAudit(1)">
+                    <option value="">全部操作</option>
+                    <option value="login">登录</option><option value="register">注册</option>
+                    <option value="library_submit">提交角色卡</option><option value="library_review">审核角色卡</option>
+                    <option value="admin_update_user">更新用户</option><option value="admin_delete_user">删除用户</option>
+                    <option value="announcement_create">创建公告</option>
+                </select>
+            </div>
+            <div class="card overflow-auto">
+                <table>
+                    <thead><tr><th>时间</th><th>用户</th><th>操作</th><th>目标</th><th>详情</th><th>IP</th></tr></thead>
+                    <tbody>
+                        <tr v-for="l in audit.list" :key="l.id">
+                            <td class="text-xs text-gray-500">{{ formatDateTime(l.createdAt) }}</td>
+                            <td>{{ l.username || '#'+l.userId }}</td>
+                            <td><span class="tag tag-user">{{ l.action }}</span></td>
+                            <td class="text-xs">{{ l.target }}</td>
+                            <td class="text-xs text-gray-500 max-w-xs truncate">{{ l.detail }}</td>
+                            <td class="text-xs text-gray-400">{{ l.ip }}</td>
+                        </tr>
+                        <tr v-if="!audit.list.length"><td colspan="6" class="text-center text-gray-400 py-6">暂无日志</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-3 text-sm text-gray-600">
+                <span>共 {{ audit.total }} 条 · 第 {{ audit.page }} 页</span>
+                <div class="flex gap-2">
+                    <button class="btn btn-ghost btn-sm" :disabled="audit.page<=1" @click="loadAudit(audit.page-1)">上一页</button>
+                    <button class="btn btn-ghost btn-sm" :disabled="audit.page*audit.pageSize>=audit.total" @click="loadAudit(audit.page+1)">下一页</button>
+                </div>
+            </div>
+        </section>
+        </template>
+    </main>
+
+    <!-- 用户编辑/创建弹窗 -->
+    <div class="modal-mask" v-if="userEditor.open" @click.self="userEditor.open=false">
+        <div class="modal">
+            <h3 class="text-lg font-bold mb-4">{{ userEditor.target ? '编辑用户' : '新建用户' }}</h3>
+            <div class="space-y-3">
+                <div v-if="!userEditor.target">
+                    <label class="block text-sm text-gray-600 mb-1">用户名</label>
+                    <input class="input" v-model="userEditor.form.username" required>
+                </div>
+                <div v-if="!userEditor.target">
+                    <label class="block text-sm text-gray-600 mb-1">初始密码</label>
+                    <input class="input" type="password" v-model="userEditor.form.password" placeholder="至少 6 位" required>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-600 mb-1">昵称</label>
+                    <input class="input" v-model="userEditor.form.displayName">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">角色</label>
+                        <select class="input" v-model="userEditor.form.role">
+                            <option value="user">用户</option><option value="admin">管理员</option>
+                        </select>
+                    </div>
+                    <div v-if="userEditor.target">
+                        <label class="block text-sm text-gray-600 mb-1">状态</label>
+                        <select class="input" v-model="userEditor.form.status">
+                            <option value="active">正常</option><option value="banned">封禁</option><option value="disabled">停用</option>
+                        </select>
+                    </div>
+                </div>
+                <div v-if="userEditor.target">
+                    <label class="block text-sm text-gray-600 mb-1">API Key（可绑定 new-api 子 key）</label>
+                    <input class="input" v-model="userEditor.form.apiKey" placeholder="留空则不修改">
+                </div>
+                <div v-if="userEditor.target">
+                    <label class="block text-sm text-gray-600 mb-1">API 配额（总 token 上限，0=不限）</label>
+                    <input class="input" type="number" v-model.number="userEditor.form.apiQuota" min="0">
+                </div>
+                <div v-if="userEditor.target">
+                    <label class="block text-sm text-gray-600 mb-1">重置密码（可选）</label>
+                    <input class="input" type="password" v-model="userEditor.form.password" placeholder="留空则不修改">
+                </div>
+                <p v-if="userEditor.err" class="text-red-600 text-sm">{{ userEditor.err }}</p>
+            </div>
+            <div class="flex justify-end gap-2 mt-5">
+                <button class="btn btn-ghost" @click="userEditor.open=false">取消</button>
+                <button class="btn btn-primary" :disabled="userEditor.loading" @click="saveUser">{{ userEditor.loading?'保存中...':'保存' }}</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 角色卡预览弹窗 -->
+    <div class="modal-mask" v-if="cardPreview.open" @click.self="cardPreview.open=false">
+        <div class="modal">
+            <h3 class="text-lg font-bold mb-2">{{ cardPreview.card?.name || '(未命名)' }}</h3>
+            <p class="text-xs text-gray-500 mb-3">作者：{{ cardPreview.card?.authorName || '-' }} · UUID：{{ cardPreview.card?.uuid }}</p>
+            <div class="text-sm text-gray-700 mb-3 max-h-40 overflow-auto bg-gray-50 p-3 rounded">{{ cardPreview.card?.description || '无简介' }}</div>
+            <details class="text-xs">
+                <summary class="cursor-pointer text-gray-600">查看原始卡片 JSON</summary>
+                <pre class="bg-gray-900 text-gray-100 p-3 rounded mt-2 max-h-60 overflow-auto text-xs">{{ cardPreview.data ? JSON.stringify(cardPreview.data, null, 2) : '加载中...' }}</pre>
+            </details>
+            <div class="flex justify-end gap-2 mt-5">
+                <button class="btn btn-ghost" @click="cardPreview.open=false">关闭</button>
+                <button class="btn btn-primary" v-if="cardPreview.card && cardPreview.card.status!=='approved'" @click="reviewCard(cardPreview.card,'approved','')">通过上架</button>
+                <button class="btn btn-danger" v-if="cardPreview.card && cardPreview.card.status!=='rejected'" @click="reviewCardWithNote(cardPreview.card,'rejected')">拒绝</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 公告编辑弹窗 -->
+    <div class="modal-mask" v-if="annEditor.open" @click.self="annEditor.open=false">
+        <div class="modal">
+            <h3 class="text-lg font-bold mb-4">{{ annEditor.target ? '编辑公告' : '新建公告' }}</h3>
+            <div class="space-y-3">
+                <div><label class="block text-sm text-gray-600 mb-1">标题</label><input class="input" v-model="annEditor.form.title" required></div>
+                <div><label class="block text-sm text-gray-600 mb-1">内容</label><textarea class="input" rows="5" v-model="annEditor.form.content" required></textarea></div>
+                <div class="grid grid-cols-3 gap-3">
+                    <div><label class="block text-sm text-gray-600 mb-1">类型</label><select class="input" v-model="annEditor.form.type"><option value="info">通知</option><option value="notice">公告</option><option value="maintenance">维护</option></select></div>
+                    <div><label class="block text-sm text-gray-600 mb-1">置顶</label><select class="input" v-model="annEditor.form.pinned"><option :value="true">是</option><option :value="false">否</option></select></div>
+                    <div><label class="block text-sm text-gray-600 mb-1">生效</label><select class="input" v-model="annEditor.form.active"><option :value="true">生效</option><option :value="false">停用</option></select></div>
+                </div>
+                <p v-if="annEditor.err" class="text-red-600 text-sm">{{ annEditor.err }}</p>
+            </div>
+            <div class="flex justify-end gap-2 mt-5">
+                <button class="btn btn-ghost" @click="annEditor.open=false">取消</button>
+                <button class="btn btn-primary" :disabled="annEditor.loading" @click="saveAnnouncement">{{ annEditor.loading?'保存中...':'保存' }}</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 拒绝理由输入弹窗 -->
+    <div class="modal-mask" v-if="rejectEditor.open" @click.self="rejectEditor.open=false">
+        <div class="modal" style="max-width:420px">
+            <h3 class="text-lg font-bold mb-3">拒绝原因</h3>
+            <textarea class="input" rows="3" v-model="rejectEditor.note" placeholder="将展示给作者"></textarea>
+            <div class="flex justify-end gap-2 mt-4">
+                <button class="btn btn-ghost" @click="rejectEditor.open=false">取消</button>
+                <button class="btn btn-danger" @click="confirmReject">确认拒绝</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="fixed bottom-4 right-4 z-50 space-y-2">
+        <div v-for="t in toasts" :key="t.id" class="px-4 py-2 rounded-lg shadow text-sm text-white" :class="{'bg-green-600':t.type==='success','bg-red-600':t.type==='error','bg-gray-800':t.type==='info'}">{{ t.message }}</div>
+    </div>
+</div>
+
+<script src="assets/js/server-sync.js"></script>
+<script>
+const { createApp, ref, reactive, computed, onMounted } = Vue;
+const sync = window.RPHubServerSync;
+createApp({
+    setup() {
+        const view = ref('stats');
+        const toasts = ref([]);
+        let toastId = 0;
+        function toast(message, type = 'info', duration = 2500) {
+            const id = ++toastId;
+            toasts.value.push({ id, message, type });
+            setTimeout(() => toasts.value = toasts.value.filter(t => t.id !== id), duration);
+        }
+
+        // Stats
+        const stats = ref(null);
+        const statsRange = ref('7d');
+        async function loadStats() {
+            try { stats.value = await sync.adminStats(statsRange.value); }
+            catch (e) { toast(e.message, 'error'); }
+        }
+        const maxLogins = computed(() => Math.max(1, ...(stats.value?.series || []).map(s => s.logins)));
+
+        // Users
+        const users = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
+        const userFilter = reactive({ q: '', status: '', role: '' });
+        async function loadUsers(page = 1) {
+            try {
+                const r = await sync.adminUsers({ page, pageSize: users.pageSize, ...userFilter });
+                users.list = r.users; users.total = r.total; users.page = r.page;
+            } catch (e) { toast(e.message, 'error'); }
+        }
+
+        const userEditor = reactive({ open: false, target: null, form: {}, loading: false, err: '' });
+        function openCreateUser() {
+            userEditor.target = null;
+            userEditor.form = { username: '', password: '', displayName: '', role: 'user', apiKey: '', apiQuota: 0 };
+            userEditor.err = ''; userEditor.open = true;
+        }
+        function openEditUser(u) {
+            userEditor.target = u;
+            userEditor.form = { displayName: u.displayName, role: u.role, status: u.status, apiKey: '', apiQuota: u.apiQuota, password: '' };
+            userEditor.err = ''; userEditor.open = true;
+        }
+        async function saveUser() {
+            userEditor.loading = true; userEditor.err = '';
+            try {
+                if (userEditor.target) {
+                    const patch = {
+                        displayName: userEditor.form.displayName,
+                        role: userEditor.form.role,
+                        status: userEditor.form.status,
+                        apiQuota: userEditor.form.apiQuota,
+                    };
+                    if (userEditor.form.apiKey) patch.apiKey = userEditor.form.apiKey;
+                    if (userEditor.form.password) patch.password = userEditor.form.password;
+                    await sync.adminUpdateUser(userEditor.target.id, patch);
+                    toast('已更新', 'success');
+                } else {
+                    await sync.adminCreateUser({
+                        username: userEditor.form.username,
+                        password: userEditor.form.password,
+                        displayName: userEditor.form.displayName,
+                        role: userEditor.form.role,
+                    });
+                    toast('已创建', 'success');
+                }
+                userEditor.open = false;
+                loadUsers(users.page);
+            } catch (e) { userEditor.err = e.message; }
+            finally { userEditor.loading = false; }
+        }
+        async function toggleBan(u) {
+            if (!confirm(`确认${u.status === 'active' ? '封禁' : '解封'}用户 ${u.username}？`)) return;
+            try {
+                await sync.adminUpdateUser(u.id, { status: u.status === 'active' ? 'banned' : 'active', bannedReason: u.status === 'active' ? '管理员封禁' : '' });
+                toast('已操作', 'success'); loadUsers(users.page);
+            } catch (e) { toast(e.message, 'error'); }
+        }
+        async function deleteUser(u) {
+            if (!confirm(`确认删除用户 ${u.username}？该操作不可撤销，将一并删除其所有数据。`)) return;
+            try { await sync.adminDeleteUser(u.id); toast('已删除', 'success'); loadUsers(users.page); }
+            catch (e) { toast(e.message, 'error'); }
+        }
+
+        // Library
+        const lib = reactive({ list: [], total: 0, page: 1, pageSize: 20 });
+        const libFilter = reactive({ status: '' });
+        async function loadLibrary(page = 1) {
+            try {
+                const r = libFilter.status === 'pending'
+                    ? await sync.adminLibraryPending({ page, pageSize: lib.pageSize })
+                    : await sync.adminLibraryList({ page, pageSize: lib.pageSize, status: libFilter.status });
+                lib.list = r.cards; lib.total = r.total; lib.page = r.page;
+            } catch (e) { toast(e.message, 'error'); }
+        }
+        const cardPreview = reactive({ open: false, card: null, data: null });
+        async function previewCard(c) {
+            cardPreview.card = c; cardPreview.data = null; cardPreview.open = true;
+            try {
+                const r = await sync.adminLibraryPreview(c.id);
+                cardPreview.data = r.data;
+            } catch (e) { toast(e.message, 'error'); }
+        }
+        async function reviewCard(c, status, note = '') {
+            try { await sync.adminLibraryReview(c.id, status, note); toast('已审核', 'success'); cardPreview.open = false; loadLibrary(lib.page); }
+            catch (e) { toast(e.message, 'error'); }
+        }
+        const rejectEditor = reactive({ open: false, card: null, note: '' });
+        function reviewCardWithNote(c, status = 'rejected') {
+            rejectEditor.card = c; rejectEditor.note = ''; rejectEditor.open = true;
+        }
+        async function confirmReject() {
+            await reviewCard(rejectEditor.card, 'rejected', rejectEditor.note);
+            rejectEditor.open = false;
+        }
+
+        // Announcements
+        const announcements = ref([]);
+        async function loadAnnouncements() {
+            try { const r = await sync.adminAnnouncements(); announcements.value = r.announcements; }
+            catch (e) { toast(e.message, 'error'); }
+        }
+        const annEditor = reactive({ open: false, target: null, form: {}, loading: false, err: '' });
+        function openAnnouncementEditor(a) {
+            annEditor.target = a || null;
+            annEditor.form = a ? { title: a.title, content: a.content, type: a.type, pinned: !!a.pinned, active: !!a.active }
+                               : { title: '', content: '', type: 'notice', pinned: false, active: true };
+            annEditor.err = ''; annEditor.open = true;
+        }
+        async function saveAnnouncement() {
+            annEditor.loading = true; annEditor.err = '';
+            try {
+                if (annEditor.target) await sync.adminUpdateAnnouncement(annEditor.target.id, annEditor.form);
+                else await sync.adminCreateAnnouncement(annEditor.form);
+                toast('已保存', 'success'); annEditor.open = false; loadAnnouncements();
+            } catch (e) { annEditor.err = e.message; }
+            finally { annEditor.loading = false; }
+        }
+        async function deleteAnnouncement(a) {
+            if (!confirm(`确认删除公告 "${a.title}"？`)) return;
+            try { await sync.adminDeleteAnnouncement(a.id); toast('已删除', 'success'); loadAnnouncements(); }
+            catch (e) { toast(e.message, 'error'); }
+        }
+
+        // API usage
+        const usageSummary = ref(null);
+        const usageRange = ref('7d');
+        async function loadUsageSummary() {
+            try { usageSummary.value = await sync.adminApiUsageSummary(usageRange.value); }
+            catch (e) { toast(e.message, 'error'); }
+        }
+
+        // Audit
+        const audit = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
+        const auditFilter = reactive({ action: '' });
+        async function loadAudit(page = 1) {
+            try {
+                const r = await sync.adminAudit({ page, pageSize: audit.pageSize, action: auditFilter.action });
+                audit.list = r.logs; audit.total = r.total; audit.page = r.page;
+            } catch (e) { toast(e.message, 'error'); }
+        }
+
+        // Navigation & helpers
+        function setView(v) {
+            view.value = v;
+            if (v === 'stats' && !stats.value) loadStats();
+            if (v === 'users' && !users.list.length) loadUsers(1);
+            if (v === 'library' && !lib.list.length) loadLibrary(1);
+            if (v === 'announcements' && !announcements.value.length) loadAnnouncements();
+            if (v === 'apiusage' && !usageSummary.value) loadUsageSummary();
+            if (v === 'audit' && !audit.list.length) loadAudit(1);
+        }
+        function goApp() { location.href = 'index.html'; }
+        function goLogin() { location.href = 'account.html'; }
+        async function doLogout() { await sync.logout(); location.href = 'account.html'; }
+
+        function formatDateTime(ts) {
+            if (!ts) return '-';
+            const d = new Date(ts);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        }
+        function formatDate(ts) {
+            const d = new Date(ts);
+            return `${d.getMonth()+1}/${d.getDate()}`;
+        }
+        const STATUS_LABELS = { active: '正常', banned: '封禁', disabled: '停用' };
+        const CARD_STATUS_LABELS = { pending: '待审核', approved: '已上架', rejected: '已拒绝', offline: '已下架' };
+        const ANN_TYPE_LABELS = { info: '通知', notice: '公告', maintenance: '维护' };
+        const ACTIVE_LABELS = { true: '生效中', false: '已停用' };
+        function statusLabel(s) { return STATUS_LABELS[s] || s; }
+        function cardStatusLabel(s) { return CARD_STATUS_LABELS[s] || s; }
+        function annTypeLabel(t) { return ANN_TYPE_LABELS[t] || t; }
+        function activeLabel(a) { return a ? '生效中' : '已停用'; }
+
+        onMounted(async () => {
+            if (!sync.isAdmin) {
+                // Try refresh
+                if (sync.refreshToken) await sync.fetchMe();
+            }
+            if (sync.isAdmin) loadStats();
+        });
+
+        return {
+            sync, view, toasts, setView, goApp, goLogin, doLogout,
+            stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
+            users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
+            lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, rejectEditor, confirmReject,
+            announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
+            usageSummary, usageRange, loadUsageSummary,
+            audit, auditFilter, loadAudit,
+            statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

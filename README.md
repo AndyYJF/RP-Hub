@@ -1,71 +1,125 @@
-# Roleplay Hub
+# Roleplay Hub · 多用户版
 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vue.js)](https://vuejs.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![DaisyUI](https://img.shields.io/badge/DaisyUI-5A0EF8?logo=daisyui&logoColor=white)](https://daisyui.com/)
+[![Node](https://img.shields.io/badge/Node-24-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-内置-003B57?logo=sqlite&logoColor=white)](https://nodejs.org/)
 
-> **一款纯前端运行的本地角色扮演（Roleplay）对话和角色卡生成工具。**
+> **基于 [STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub) 的二次开发版本，新增多用户体系、云端数据同步、公共角色库与后台管理。**
+
+---
+
+## 致谢与声明
+
+本项目是 **[STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub)** 的二次开发版本（二改）。
+
+- **原项目**：[https://github.com/STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub) by [@STA1N156](https://github.com/STA1N156)
+- **原项目许可**：[CC BY-NC 4.0](./LICENSE)（知识共享-署名-非商业性使用 4.0）
+- **本项目**：在原项目基础上新增后端与多用户功能，同样遵循 CC BY-NC 4.0 协议
+
+> **感谢原作者 STA1N156 开源了优秀的 RP-Hub 项目，本二改版本在其基础上扩展了多用户能力。**
 
 **【免责与授权声明】**  
-本项目基于 **[CC BY-NC 4.0（知识共享-署名-非商业性使用 4.0 国际许可协议）](./LICENSE)** 开源。**明确禁止任何形式的商业化使用（包括但不限于：作为收费服务提供、打包在付费产品中售卖、在产品内植入广告盈利等）。** 任何使用者必须遵守该协议，尊重原作者的署名权。对于违反协议的商业行为，保留追究法律责任的权利。
+本项目基于 **[CC BY-NC 4.0](./LICENSE)** 开源。**明确禁止任何形式的商业化使用（包括但不限于：作为收费服务提供、打包在付费产品中售卖、在产品内植入广告盈利等）。**
 
 ---
 
-## 核心特性 (Features)
+## 二改新增内容
 
-Roleplay Hub 致力于提供流畅、私密且功能强大的本地化AI Roleplay体验。
+在原纯前端项目基础上，新增了以下功能（详见 [DEPLOY.md](./DEPLOY.md)）：
 
-## 快速开始 (Quick Start)
+### 多用户体系
+- JWT 认证（用户名 + 密码 + 刷新令牌轮转）
+- 用户数据云端同步（基于时间戳的智能合并，非整体覆盖）
+- 本地模式 / 服务端模式可切换（未登录时与原项目完全一致）
 
-本项目无需复杂的 Node.js 环境或依赖安装，即开即用！
+### 公共角色库（自建）
+- 用户提交角色卡 → 管理员审核 → 公共展示 → 其他用户下载
+- 与原作者的「万相广场」并存，侧边栏明确区分
 
-### 1. 下载与运行
-1. 点击项目主页绿色的 `Code` 按钮，选择 `Download ZIP`。
-2. 将下载的 ZIP 压缩包解压到您的本地任意文件夹中。
-3. 双击打开 `index.html` 文件，即可在浏览器（推荐 Chrome / Edge / Firefox）中启动 Roleplay Hub。
+### 后台管理（`admin.html`）
+- 系统统计（用户/角色卡/登录趋势）
+- 用户管理（增删改查、封禁/解封、API Key 绑定、配额）
+- 角色卡审核（预览、通过、拒绝带理由、下架）
+- 公告管理（创建/编辑/置顶，前端主页自动展示）
+- API 用量统计、审计日志
 
-*(注：如果您遇到跨域或本地文件读取权限问题，可以尝试使用 VS Code 的 `Live Server` 插件，或简单的本地服务器工具来运行该目录。但在绝大多数现代浏览器中，双击 index.html 即可正常使用所有核心功能。)*
+### 站点公告系统
+- 管理员发布公告 → 前端主页弹窗展示（区别于原版本更新日志）
 
-### 2. 初始化设置
-1. 打开应用后，点击侧边栏（或顶部菜单）的**设置 (Settings)** 选项。
-2. 选择自定义配置，填入您自己的或第三方提供的 API 节点 (`API URL`)。
-3. 填入对应的 `API Key`，并输入或选择您想使用的 `模型名称 (Model)`。
-4. 在**角色管理**界面，导入您的角色卡文件（或点击新建角色并手动填写设定）。
-5. 回到对话界面，开始属于您的 Roleplay 旅程
+### 部署
+- Docker Compose 一键部署
+- Caddy 反向代理 + 自动 HTTPS
+- systemd 服务管理
 
 ---
 
-## 目录结构 (Directory Structure)
+## 目录结构
 
 ```text
-Roleplay-Hub/
-├── index.html            # 主程序
-├── character/            # 辅助页面
-│   └── index.html
+RP-Hub/
+├── index.html            # 主应用（已集成服务端模式，本地模式不受影响）
+├── account.html          # 【新增】登录/注册/账号管理页
+├── admin.html            # 【新增】后台管理面板
+├── character/            # 原项目辅助页面
 ├── assets/
-│   ├── css/
-│   │   └── styles.css    # 核心样式文件
+│   ├── css/styles.css    # 原项目样式
 │   └── js/
-│       ├── app.js        # 核心业务逻辑
-│       ├── card-utils.js # 角色卡导入导出相关工具
-│       ├── ui-select.js  # 自定义选择器组件
-│       └── utils.js      # 工具函数库
-└── README.md             # 本说明文件
+│       ├── app.js        # 原项目核心逻辑（新增同步钩子，本地模式不受影响）
+│       ├── server-sync.js# 【新增】服务端同步层
+│       ├── card-utils.js # 原项目角色卡工具
+│       ├── ui-select.js  # 原项目选择器组件
+│       └── utils.js      # 原项目工具函数
+├── server/               # 【新增】Node.js + Express 后端
+│   └── src/
+│       ├── index.js      # 入口
+│       ├── config.js     # 环境配置
+│       ├── db.js         # SQLite + 迁移（使用 Node 24 内置 node:sqlite）
+│       ├── middleware/   # auth / error
+│       ├── routes/       # auth / sync / library / admin / announcements
+│       └── utils/jwt.js
+├── Dockerfile            # 【新增】
+├── docker-compose.yml    # 【新增】
+├── DEPLOY.md             # 【新增】部署文档
+├── LICENSE               # 原项目 LICENSE（CC BY-NC 4.0，保持不变）
+└── README.md             # 本文件
 ```
 
 ---
 
-## 协议与许可 (License)
+## 快速开始
 
-本项目严格遵守以下开源协议：
+### 纯前端模式（与原项目一致）
+
+双击打开 `index.html` 即可，无需后端。所有原项目功能完全不受影响。
+
+### 多用户模式（完整部署）
+
+详见 [DEPLOY.md](./DEPLOY.md)。简要步骤：
+
+```bash
+# Docker Compose
+cp .env.example .env   # 修改 JWT 密钥和管理员密码
+docker compose up -d --build
+
+# 或手动部署
+cd server
+cp .env.example .env
+npm install
+npm run init-admin
+npm start
+```
+
+---
+
+## 协议与许可
 
 **[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans)**
 
-* **您可以**：自由地共享（在任何媒介以任何形式复制、发行本作品）与演绎（修改、转换或以本作品为基础进行创作）。
-* **您必须**：
-  * **署名 (Attribution)**：给出适当的署名，提供指向本许可协议的链接，同时标明是否对原始作品作了修改。
-  * **非商业性使用 (NonCommercial)**：**您不得将本作品或演绎作品用于任何商业目的。** 禁止任何形式的售卖、付费订阅集成或利用本项目进行广告牟利。
-* 若要获取本项目的商业授权，请直接联系项目原作者。
+- **署名**：本项目标注了原作者 [STA1N156](https://github.com/STA1N156) 及原项目链接
+- **非商业性使用**：禁止任何形式的商业化使用
+- **二改声明**：原 README 注明"二改需经作者授权"，使用前请确认已获原作者许可
 
-详细许可条款请参见根目录下的 [`LICENSE`](./LICENSE) 文件。
+详细许可条款请参见 [`LICENSE`](./LICENSE) 文件（与原项目一致，未修改）。

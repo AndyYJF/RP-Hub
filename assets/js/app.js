@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
+﻿const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
 // Configure marked to disable indented code blocks
 // This allows indented HTML (like details/summary) to be rendered as HTML instead of code
@@ -222,6 +222,140 @@ createApp({
         const updateCountdown = ref(0);
         let updateCountdownTimer = null;
         const isUpdateScrolledToBottom = ref(false);
+
+        // 站点公告（来自后台管理，区别于上面的版本更新日志）
+        const showAnnouncementModal = ref(false);
+        const siteAnnouncement = reactive({ id: 0, title: '', content: '', type: 'info', pinned: false, createdAt: 0 });
+        const dontShowAnnouncementAgain = ref(false);
+        const formatAnnouncementTime = (ts) => {
+            if (!ts) return '';
+            const d = new Date(ts);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        };
+        const closeAnnouncementModal = () => {
+            if (dontShowAnnouncementAgain.value && siteAnnouncement.id) {
+                try { localStorage.setItem('rphub_read_announcement_ids', siteAnnouncement.id.toString()); } catch (_) {}
+            }
+            showAnnouncementModal.value = false;
+        };
+        const fetchAndShowAnnouncements = async () => {
+            const sync = window.RPHubServerSync;
+            if (!sync || !sync.baseUrl) return;
+            try {
+                const data = await sync.listAnnouncements();
+                const list = data.announcements || [];
+                if (!list.length) return;
+                // 选最新的（已按 pinned desc, created_at desc 排序）
+                const top = list[0];
+                // 检查是否已读过此公告
+                let readIds = [];
+                try { readIds = (localStorage.getItem('rphub_read_announcement_ids') || '').split(',').filter(Boolean); } catch (_) {}
+                if (readIds.includes(String(top.id))) return;
+                siteAnnouncement.id = top.id;
+                siteAnnouncement.title = top.title;
+                siteAnnouncement.content = top.content;
+                siteAnnouncement.type = top.type;
+                siteAnnouncement.pinned = !!top.pinned;
+                siteAnnouncement.createdAt = top.created_at;
+                dontShowAnnouncementAgain.value = false;
+                showAnnouncementModal.value = true;
+            } catch (e) {
+                console.warn('[Announcements] fetch failed:', e?.message || e);
+            }
+        };
+
+        // ---------- 本站公共角色库 ----------
+        const libraryCards = ref([]);
+        const libraryLoading = ref(false);
+        const librarySearchQuery = ref('');
+        const libraryPage = ref(1);
+        const libraryPageSize = 20;
+        const libraryTotal = ref(0);
+        const mySubmissions = ref([]);
+
+        const loadLibraryPage = async (page = 1) => {
+            const sync = window.RPHubServerSync;
+            if (!sync || !sync.baseUrl) return;
+            libraryLoading.value = true;
+            try {
+                const r = await sync.libraryList({ page, pageSize: libraryPageSize, q: librarySearchQuery.value });
+                // 卡片数据需要单独拉取 avatar，先列出基本信息
+                libraryCards.value = (r.cards || []).map(c => ({ ...c, data: null }));
+                libraryTotal.value = r.total || 0;
+                libraryPage.value = page;
+                // 异步加载每张卡的完整数据（含 avatar）
+                for (const c of libraryCards.value) {
+                    sync.libraryGet(c.uuid).then(r => { if (r && r.data) c.data = r.data; }).catch(() => {});
+                }
+            } catch (e) {
+                showToast('加载公共库失败：' + (e.message || ''), 'error');
+            } finally {
+                libraryLoading.value = false;
+            }
+        };
+        const searchLibrary = () => loadLibraryPage(1);
+        const downloadLibraryCard = async (card) => {
+            const sync = window.RPHubServerSync;
+            if (!sync) return;
+            try {
+                const r = await sync.libraryGet(card.uuid);
+                if (!r || !r.data) { showToast('下载失败：数据为空', 'error'); return; }
+                // 复用官方 importCharacter 的 processCharacterData，走完整标准化流程：
+                // 解析 V2/V1 字段、提取世界书/正则/UI模板、push 到 characters、自动选中并进入聊天
+                const avatarUrl = r.data.avatar || null;
+                const imported = await processCharacterData(r.data, avatarUrl);
+                if (imported) {
+                    saveData();
+                    showToast(`已导入角色卡：${card.name}`, 'success');
+                }
+            } catch (e) {
+                showToast('下载失败：' + (e.message || ''), 'error');
+            }
+        };
+        const submitCardToLibrary = async (char, meta = {}) => {
+            const sync = window.RPHubServerSync;
+            if (!sync || !sync.isLoggedIn) { showToast('请先登录', 'error'); return; }
+            try {
+                await sync.librarySubmit({
+                    uuid: char.uuid,
+                    name: char.name,
+                    description: meta.description || char.description || '',
+                    tags: meta.tags || [],
+                    card: char,
+                });
+                showToast('已提交，等待管理员审核', 'success');
+            } catch (e) {
+                showToast('提交失败：' + (e.message || ''), 'error');
+            }
+        };
+        const showMySubmissions = async () => {
+            const sync = window.RPHubServerSync;
+            if (!sync || !sync.isLoggedIn) { showToast('请先登录', 'error'); return; }
+            try {
+                const r = await sync.libraryMySubmissions();
+                mySubmissions.value = (r.cards || []).map(c => ({ ...c, data: null }));
+                currentView.value = 'mySubmissions';
+                // 异步加载 avatar
+                for (const c of mySubmissions.value) {
+                    if (c.status === 'approved') {
+                        sync.libraryGet(c.uuid).then(r => { if (r && r.data) c.data = r.data; }).catch(() => {});
+                    }
+                }
+            } catch (e) {
+                showToast('加载失败：' + (e.message || ''), 'error');
+            }
+        };
+        const deleteMySubmission = async (card) => {
+            const sync = window.RPHubServerSync;
+            if (!confirm(`确认撤回「${card.name}」的提交？`)) return;
+            try {
+                await sync.libraryDeleteMine(card.uuid);
+                mySubmissions.value = mySubmissions.value.filter(c => c.uuid !== card.uuid);
+                showToast('已撤回', 'success');
+            } catch (e) {
+                showToast('撤回失败：' + (e.message || ''), 'error');
+            }
+        };
 
         const checkUpdateScroll = (e) => {
             const el = e.target;
@@ -1605,6 +1739,8 @@ createApp({
                 isSquareLoading.value = true;
                 // Add timestamp to force refresh
                 squareUrl.value = `https://rphforum.zeabur.app/?t=${Date.now()}`;
+            } else if (newView === 'library') {
+                if (!libraryCards.value.length) loadLibraryPage(1);
             } else if (newView === 'presets') {
                 nextTick(() => {
                     const el = document.getElementById('presets-list');
@@ -1921,6 +2057,8 @@ createApp({
                     showToast('存储空间不足，无法保存', 'error');
                 }
             }
+            // Server sync: fire-and-forget, debounced. Never blocks local save.
+            scheduleServerSyncPush();
         };
 
         const saveConversationMutationNow = async ({ saveTemplateRuntime = false } = {}) => {
@@ -1935,7 +2073,228 @@ createApp({
             } catch (e) {
                 console.error('Save conversation mutation failed:', e);
             }
+            scheduleServerSyncPush();
         };
+
+        // ---------- Server sync helpers (non-blocking, opt-in) ----------
+        const serverSync = window.RPHubServerSync;
+        let _serverSyncTimer = null;
+        let _serverSyncPulling = false;
+        let _serverSyncSuppressPush = false;
+        let _serverSyncInitialPulled = false;
+
+        const scheduleServerSyncPush = () => {
+            if (!serverSync || !serverSync.isServerMode) return;
+            if (_serverSyncSuppressPush) return;
+            if (_serverSyncTimer) clearTimeout(_serverSyncTimer);
+            _serverSyncTimer = setTimeout(() => {
+                _serverSyncTimer = null;
+                pushServerSyncNow().catch(e => console.warn('[ServerSync] push failed:', e?.message || e));
+            }, 1500);
+        };
+
+        const pushServerSyncNow = async () => {
+            if (!serverSync || !serverSync.isServerMode) return;
+            const global = {
+                characters: characters.value,
+                settings: settings,
+                presets: presets.value,
+                regex: regexScripts.value,
+                global_regex: globalRegexScripts.value,
+                worldinfo: worldInfo.value,
+                global_worldinfo: globalWorldInfo.value,
+                worldinfo_settings: worldInfoSettings,
+                global_ui_templates: globalUiTemplates.value,
+                active_tools: normalizeActiveTools(),
+                user: user,
+                user_profiles: JSON.parse(JSON.stringify(userProfiles.value)),
+                active_profile_id: activeProfileId.value,
+                last_active_char: currentCharacterIndex.value,
+                memory_settings: memorySettings,
+            };
+            const scoped = { chat: {}, memories: {} };
+            for (const char of characters.value) {
+                if (!char.uuid) continue;
+                try {
+                    const chat = await getScopedStoredValue('chat', char.uuid);
+                    if (chat !== undefined) scoped.chat[char.uuid] = chat;
+                } catch (_) {}
+                try {
+                    const mem = await getScopedStoredValue('memories', char.uuid);
+                    if (mem !== undefined) scoped.memories[char.uuid] = mem;
+                } catch (_) {}
+            }
+            const result = await serverSync.bulkSync({ global, scoped });
+            // Record local sync meta with server-returned timestamps so next pull can diff
+            if (result && result.updatedAt) {
+                const meta = await getSyncMeta();
+                const now = result.updatedAt;
+                Object.keys(global).forEach(k => meta[`global:${k}`] = now);
+                for (const name of Object.keys(scoped)) {
+                    for (const id of Object.keys(scoped[name])) {
+                        meta[`scoped:${name}:${id}`] = now;
+                    }
+                }
+                await setSyncMeta(meta);
+            }
+        };
+
+        // ---------- Sync meta: local record of each key's last-synced updatedAt ----------
+        const SYNC_META_KEY = '_sync_meta';
+        const getSyncMeta = async () => {
+            try {
+                if (!db) await initDB();
+                const v = await getStoredValue(SYNC_META_KEY);
+                return (v && typeof v === 'object') ? v : {};
+            } catch (_) { return {}; }
+        };
+        const setSyncMeta = async (meta) => {
+            try {
+                if (!db) await initDB();
+                await setStoredValue(SYNC_META_KEY, meta);
+            } catch (_) {}
+        };
+
+        // Merge two character arrays by UUID. Returns merged array.
+        // Strategy: union by UUID; if both have same UUID, keep the one from "newer side".
+        // `newerSide` is 'local' or 'remote'. For deletions, caller handles via separate delete list.
+        const mergeCharacters = (localChars, remoteChars, newerSide = 'remote') => {
+            if (!Array.isArray(localChars)) return remoteChars || [];
+            if (!Array.isArray(remoteChars)) return localChars || [];
+            const map = new Map();
+            // Index local
+            for (const c of localChars) {
+                if (c && c.uuid) map.set(c.uuid, { side: 'local', char: c });
+            }
+            // Merge remote
+            for (const c of remoteChars) {
+                if (!c || !c.uuid) continue;
+                const existing = map.get(c.uuid);
+                if (!existing) {
+                    map.set(c.uuid, { side: 'remote', char: c });
+                } else {
+                    // Conflict: keep newer side
+                    map.set(c.uuid, { side: newerSide, char: newerSide === 'local' ? existing.char : c });
+                }
+            }
+            return Array.from(map.values()).map(v => v.char);
+        };
+
+        const pullServerSyncNow = async () => {
+            if (!serverSync || !serverSync.isServerMode || _serverSyncPulling) return;
+            _serverSyncPulling = true;
+            _serverSyncSuppressPush = true;
+            let hasLocalNewer = false; // track if local has data newer than server
+            try {
+                const data = await serverSync.pullAll();
+                if (!data) return;
+                const serverMeta = data.updatedAt || {};
+                const localMeta = await getSyncMeta();
+                const g = data.global || {};
+
+                // ---- Helper: decide for a global key whether to take remote, keep local, or no-change ----
+                const decide = (key) => {
+                    const sTs = serverMeta[`global:${key}`] || 0;
+                    const lTs = localMeta[`global:${key}`] || 0;
+                    // remote has, local doesn't -> take remote
+                    if (sTs && !lTs) return 'remote';
+                    // local has, remote doesn't -> keep local (push later)
+                    if (!sTs && lTs) { hasLocalNewer = true; return 'local'; }
+                    // both have -> compare timestamps
+                    if (sTs > lTs) return 'remote';
+                    if (lTs > sTs) { hasLocalNewer = true; return 'local'; }
+                    return 'equal';
+                };
+
+                // ---- Characters: special merge by UUID (not whole-array replace) ----
+                if (g.characters) {
+                    const decision = decide('characters');
+                    if (decision === 'remote') {
+                        characters.value = g.characters;
+                    } else if (decision === 'equal') {
+                        // Both sides unchanged since last sync — keep local (identical anyway)
+                    } else {
+                        // 'local' or ambiguous — do UUID-level merge to preserve both sides' new cards
+                        const merged = mergeCharacters(characters.value, g.characters, 'remote');
+                        characters.value = merged;
+                        if (decision === 'local') hasLocalNewer = true;
+                    }
+                }
+
+                // ---- Other global keys: simple timestamp-based decision ----
+                const simpleKeys = ['settings', 'presets', 'regex', 'global_regex',
+                    'worldinfo', 'global_worldinfo', 'worldinfo_settings',
+                    'global_ui_templates', 'active_tools', 'user', 'user_profiles',
+                    'active_profile_id', 'last_active_char', 'memory_settings'];
+                for (const key of simpleKeys) {
+                    if (!(key in g)) continue;
+                    const decision = decide(key);
+                    if (decision === 'remote') {
+                        switch (key) {
+                            case 'settings':
+                                Object.keys(g.settings).forEach(k => {
+                                    if (Object.prototype.hasOwnProperty.call(settings, k)) settings[k] = g.settings[k];
+                                });
+                                break;
+                            case 'user': Object.assign(user, g.user); break;
+                            case 'user_profiles': userProfiles.value = g.user_profiles; break;
+                            case 'active_profile_id': activeProfileId.value = g.active_profile_id; break;
+                            case 'worldinfo_settings': Object.assign(worldInfoSettings, g.worldinfo_settings); break;
+                            case 'memory_settings': Object.assign(memorySettings, g.memory_settings); break;
+                            case 'active_tools': _activeToolsOverride = g.active_tools; break;
+                            case 'last_active_char': /* don't override on pull */ break;
+                            case 'presets': presets.value = g.presets; break;
+                            case 'regex': regexScripts.value = g.regex; break;
+                            case 'global_regex': globalRegexScripts.value = g.global_regex; break;
+                            case 'worldinfo': worldInfo.value = g.worldinfo; break;
+                            case 'global_worldinfo': globalWorldInfo.value = g.global_worldinfo; break;
+                            case 'global_ui_templates': globalUiTemplates.value = g.global_ui_templates; break;
+                        }
+                    }
+                    // 'local' or 'equal' -> keep current local value (don't touch)
+                }
+
+                // ---- Scoped data (chat / memories): per-id timestamp comparison ----
+                const scoped = data.scoped || {};
+                if (db) {
+                    for (const [name, map] of Object.entries(scoped)) {
+                        for (const [id, value] of Object.entries(map)) {
+                            const sTs = serverMeta[`scoped:${name}:${id}`] || 0;
+                            const lTs = localMeta[`scoped:${name}:${id}`] || 0;
+                            if (sTs >= lTs) {
+                                // remote is newer or equal — overwrite local
+                                try { await setScopedStoredValue(name, id, value); } catch (_) {}
+                            } else {
+                                // local is newer — keep local, will be pushed
+                                hasLocalNewer = true;
+                            }
+                        }
+                    }
+                }
+
+                _serverSyncInitialPulled = true;
+                // Update local sync meta to server timestamps for keys we accepted
+                const newMeta = { ...localMeta };
+                for (const [metaKey, sTs] of Object.entries(serverMeta)) {
+                    const lTs = localMeta[metaKey] || 0;
+                    if (sTs >= lTs) newMeta[metaKey] = sTs;
+                }
+                await setSyncMeta(newMeta);
+
+                // Trigger one local save to persist merged global state
+                if (_initComplete) saveData({ saveMemories: false });
+            } finally {
+                _serverSyncPulling = false;
+                // After pull, if local had newer data, push it back to server
+                setTimeout(() => {
+                    _serverSyncSuppressPush = false;
+                    if (hasLocalNewer) {
+                        pushServerSyncNow().catch(e => console.warn('[ServerSync] post-pull push failed:', e?.message || e));
+                    }
+                }, 3000);
+            }
+        };
+        let _activeToolsOverride = null;
 
         const dbDeleteFrom = (targetDb, key) => {
             return new Promise((resolve, reject) => {
@@ -9721,6 +10080,160 @@ image###生成的提示词###
             editingWorldInfo.data.keys = parseWorldInfoKeysText(worldInfoKeysText.value, editingWorldInfo.data.useRegex);
         };
 
+        // Shared character data processing — used by importCharacter (file import)
+        // and downloadLibraryCard (本站公共库 download). Extracted from importCharacter
+        // so both paths produce identical normalized characters and auto-select them.
+        const processCharacterData = async (rawData, avatarUrl) => {
+            try {
+                console.log('Processing Raw Data:', rawData);
+                let charData = rawData;
+                let characterBook = null;
+                let regexScripts = null;
+                let uiTemplates = null;
+
+                // --- External Card Data Structure Parsing ---
+
+                // Wrapped cards store the actual character fields in a 'data' object.
+                if (rawData.data) {
+                    charData = rawData.data;
+                }
+
+                const discardRemovedCardFields = (target) => {
+                    if (!target || typeof target !== 'object') return;
+                    [
+                        'mes_example',
+                        'system_prompt',
+                        'post_history_instructions',
+                        'alternate_greetings',
+                        'tags',
+                        'creator',
+                        'character_version',
+                        'spec',
+                        'spec_version'
+                    ].forEach(field => delete target[field]);
+                    if (target.extensions && typeof target.extensions === 'object') {
+                        delete target.extensions.world;
+                        delete target.extensions.depth_prompt;
+                    }
+                };
+                discardRemovedCardFields(rawData);
+                discardRemovedCardFields(rawData.data);
+                discardRemovedCardFields(charData);
+
+                // --- Extract Core Character Fields ---
+                const name = charData.name || charData.char_name || 'Unknown';
+                const description = charData.description || charData.char_persona || '';
+                const personality = charData.personality || '';
+                const scenario = charData.scenario || '';
+                const first_mes = charData.first_mes || '';
+                const creator_notes = charData.creator_notes || charData.creatorcomment || charData.creator_comment || '';
+
+                // --- Extract World Info (Character Book) ---
+                if (charData.character_book) {
+                    characterBook = charData.character_book;
+                } else if (rawData.character_book) {
+                    characterBook = rawData.character_book;
+                }
+
+                // --- Extract Regex Scripts ---
+                if (charData.extensions && charData.extensions.regex_scripts) {
+                    regexScripts = charData.extensions.regex_scripts;
+                } else if (rawData.extensions && rawData.extensions.regex_scripts) {
+                    regexScripts = rawData.extensions.regex_scripts;
+                } else if (charData.regex_scripts || rawData.regex_scripts) {
+                    regexScripts = charData.regex_scripts || rawData.regex_scripts;
+                }
+
+                uiTemplates = charData.uiTemplates
+                    || charData.ui_templates
+                    || rawData.uiTemplates
+                    || rawData.ui_templates
+                    || charData.extensions?.ui_templates
+                    || charData.extensions?.rp_hub_ui_templates
+                    || rawData.extensions?.ui_templates
+                    || rawData.extensions?.rp_hub_ui_templates
+                    || null;
+
+                const char = {
+                    name,
+                    description,
+                    first_mes,
+                    avatar: avatarUrl || defaultAvatar,
+                    personality,
+                    scenario,
+                    creator_notes,
+                    worldInfo: [],
+                    regexScripts: [],
+                    uiTemplates: Array.isArray(uiTemplates) ? uiTemplates.map(t => normalizeUiTemplate({ ...sanitizeUiTemplateImportEntry(t), id: generateUUID(), scope: 'character' })) : [],
+                    recentGenerationTimes: [],
+                    uuid: generateUUID(),
+                    createdAt: Date.now()
+                };
+
+                // --- Process World Info Entries ---
+                let entries = [];
+                if (characterBook) {
+                    if (Array.isArray(characterBook.entries)) {
+                        entries = characterBook.entries;
+                    } else if (typeof characterBook.entries === 'object' && characterBook.entries !== null) {
+                        entries = Object.values(characterBook.entries);
+                    } else if (Array.isArray(characterBook)) {
+                        entries = characterBook;
+                    }
+                }
+
+                if (entries.length > 0) {
+                    char.worldInfo = entries
+                        .map(entry => normalizeWorldInfoEntry({ ...entry, scope: 'character' }))
+                        .filter(entry => entry.scope !== 'global');
+                    console.log(`Imported and normalized ${char.worldInfo.length} World Info entries.`);
+                }
+
+                // --- Process Regex Scripts ---
+                if (Array.isArray(regexScripts)) {
+                    char.regexScripts = regexScripts.map(script => {
+                        const normalized = { ...script };
+                        if (!normalized.name && script.scriptName) normalized.name = script.scriptName;
+                        if (!normalized.name) normalized.name = 'Regex Script';
+                        if (!normalized.regex && script.findRegex) normalized.regex = script.findRegex;
+                        if (!normalized.regex) normalized.regex = '';
+                        if (normalized.regex.startsWith('/') && normalized.regex.lastIndexOf('/') > 0) {
+                            const lastSlash = normalized.regex.lastIndexOf('/');
+                            const potentialFlags = normalized.regex.substring(lastSlash + 1);
+                            if (/^[gimsuy]*$/.test(potentialFlags)) {
+                                normalized.flags = potentialFlags;
+                                normalized.regex = normalized.regex.substring(1, lastSlash);
+                            }
+                        }
+                        if (!normalized.replacement && script.replaceString) normalized.replacement = script.replaceString;
+                        if (!normalized.flags && script.regexFlags) normalized.flags = script.regexFlags;
+                        if (!normalized.flags) normalized.flags = 'g';
+                        if (!normalized.hasOwnProperty('enabled')) {
+                            normalized.enabled = script.hasOwnProperty('disabled') ? !script.disabled : true;
+                        }
+                        if (!normalized.placement) normalized.placement = script.placement || [1, 2];
+                        if (normalized.markdownOnly === undefined) normalized.markdownOnly = script.markdownOnly || false;
+                        if (normalized.promptOnly === undefined) normalized.promptOnly = script.promptOnly || false;
+                        if (normalized.runOnEdit === undefined) normalized.runOnEdit = script.runOnEdit || false;
+                        if (normalized.minDepth === undefined) normalized.minDepth = script.minDepth || null;
+                        if (normalized.maxDepth === undefined) normalized.maxDepth = script.maxDepth || null;
+                        return normalizeRegexScript({ ...normalized, scope: 'character' }, 'character');
+                    }).filter(script => script.scope !== 'global');
+                    console.log(`Imported ${char.regexScripts.length} Regex scripts.`);
+                }
+
+                characters.value.push(char);
+                const newCharacterIndex = characters.value.length - 1;
+                showAddCharacterMenu.value = false;
+                await selectCharacter(newCharacterIndex, true);
+                return char;
+            } catch (err) {
+                console.error("Character processing error:", err);
+                showToast('解析角色数据失败: ' + err.message, 'error');
+                return null;
+            }
+        };
+
         const importCharacter = (event) => {
             const file = event.target.files[0];
             if (!file) return;
@@ -9730,219 +10243,6 @@ image###生成的提示词###
             // Reset file input
             event.target.value = '';
 
-            const processCharacterData = async (rawData, avatarUrl) => {
-                try {
-                    console.log('Processing Raw Data:', rawData);
-                    let charData = rawData;
-                    let characterBook = null;
-                    let regexScripts = null;
-                    let uiTemplates = null;
-
-                    // --- External Card Data Structure Parsing ---
-
-                    // Wrapped cards store the actual character fields in a 'data' object.
-                    if (rawData.data) {
-                        charData = rawData.data;
-                    }
-
-                    const discardRemovedCardFields = (target) => {
-                        if (!target || typeof target !== 'object') return;
-                        [
-                            'mes_example',
-                            'system_prompt',
-                            'post_history_instructions',
-                            'alternate_greetings',
-                            'tags',
-                            'creator',
-                            'character_version',
-                            'spec',
-                            'spec_version'
-                        ].forEach(field => delete target[field]);
-                        if (target.extensions && typeof target.extensions === 'object') {
-                            delete target.extensions.world;
-                            delete target.extensions.depth_prompt;
-                        }
-                    };
-                    discardRemovedCardFields(rawData);
-                    discardRemovedCardFields(rawData.data);
-                    discardRemovedCardFields(charData);
-
-                    // --- Extract Core Character Fields ---
-                    // External cards may use specific field names. We map them to our internal structure.
-                    // Priority: V2 fields > V1 fields > Fallbacks
-
-                    const name = charData.name || charData.char_name || 'Unknown';
-                    const description = charData.description || charData.char_persona || '';
-                    const personality = charData.personality || '';
-                    const scenario = charData.scenario || '';
-                    const first_mes = charData.first_mes || '';
-                    const creator_notes = charData.creator_notes || charData.creatorcomment || charData.creator_comment || '';
-
-                    // --- Extract World Info (Character Book) ---
-                    // In V2, this is explicitly 'character_book'
-                    if (charData.character_book) {
-                        characterBook = charData.character_book;
-                    }
-                    // Fallback for V1 or loose JSONs
-                    else if (rawData.character_book) {
-                        characterBook = rawData.character_book;
-                    }
-
-                    // --- Extract Regex Scripts ---
-                    // In V2-compatible cards, regex scripts are often in 'extensions.regex_scripts'
-                    if (charData.extensions && charData.extensions.regex_scripts) {
-                        regexScripts = charData.extensions.regex_scripts;
-                    }
-                    // Check root extensions as fallback
-                    else if (rawData.extensions && rawData.extensions.regex_scripts) {
-                        regexScripts = rawData.extensions.regex_scripts;
-                    }
-                    // Direct legacy keys
-                    else if (charData.regex_scripts || rawData.regex_scripts) {
-                        regexScripts = charData.regex_scripts || rawData.regex_scripts;
-                    }
-
-                    uiTemplates = charData.uiTemplates
-                        || charData.ui_templates
-                        || rawData.uiTemplates
-                        || rawData.ui_templates
-                        || charData.extensions?.ui_templates
-                        || charData.extensions?.rp_hub_ui_templates
-                        || rawData.extensions?.ui_templates
-                        || rawData.extensions?.rp_hub_ui_templates
-                        || null;
-
-                    const char = {
-                        name,
-                        description,
-                        first_mes,
-                        avatar: avatarUrl || defaultAvatar,
-                        personality,
-                        scenario,
-                        creator_notes,
-                        worldInfo: [],
-                        regexScripts: [],
-                        uiTemplates: Array.isArray(uiTemplates) ? uiTemplates.map(t => normalizeUiTemplate({ ...sanitizeUiTemplateImportEntry(t), id: generateUUID(), scope: 'character' })) : [],
-                        recentGenerationTimes: [],
-                        uuid: generateUUID(),
-                        createdAt: Date.now()
-                    };
-
-                    // --- Process World Info Entries ---
-                    let entries = [];
-                    if (characterBook) {
-                        if (Array.isArray(characterBook.entries)) {
-                            entries = characterBook.entries;
-                        } else if (typeof characterBook.entries === 'object' && characterBook.entries !== null) {
-                            // Handle object-based entries from some exports (like the user's file)
-                            entries = Object.values(characterBook.entries);
-                        } else if (Array.isArray(characterBook)) {
-                            // Legacy array format
-                            entries = characterBook;
-                        }
-                    }
-
-                    if (entries.length > 0) {
-                        char.worldInfo = entries
-                            .map(entry => normalizeWorldInfoEntry({ ...entry, scope: 'character' }))
-                            .filter(entry => entry.scope !== 'global');
-                        console.log(`Imported and normalized ${char.worldInfo.length} World Info entries.`);
-                    }
-
-                    // --- Process Regex Scripts ---
-                    if (Array.isArray(regexScripts)) {
-                        char.regexScripts = regexScripts.map(script => {
-                            // Preserve ALL original external fields completely
-                            const normalized = {
-                                ...script, // Keep all original fields intact
-                            };
-
-                            // Add normalized fields ONLY if they don't exist
-                            // Common external fields: scriptName, findRegex, replaceString, trimStrings,
-                            // disabled, markdownOnly, promptOnly, runOnEdit, substituteRegex
-                            if (!normalized.name && script.scriptName) {
-                                normalized.name = script.scriptName;
-                            }
-                            if (!normalized.name) {
-                                normalized.name = 'Regex Script';
-                            }
-
-                            // Keep both findRegex (external standard) and regex (legacy)
-                            if (!normalized.regex && script.findRegex) {
-                                normalized.regex = script.findRegex;
-                            }
-                            if (!normalized.regex) {
-                                normalized.regex = '';
-                            }
-
-                            // Parse /pattern/flags format if present
-                            if (normalized.regex.startsWith('/') && normalized.regex.lastIndexOf('/') > 0) {
-                                const lastSlash = normalized.regex.lastIndexOf('/');
-                                const potentialFlags = normalized.regex.substring(lastSlash + 1);
-                                // Simple flags validation
-                                if (/^[gimsuy]*$/.test(potentialFlags)) {
-                                    normalized.flags = potentialFlags;
-                                    normalized.regex = normalized.regex.substring(1, lastSlash);
-                                }
-                            }
-
-                            // Keep both replaceString (external standard) and replacement (legacy)
-                            if (!normalized.replacement && script.replaceString) {
-                                normalized.replacement = script.replaceString;
-                            }
-
-                            // Preserve flags (if not already set by parsing)
-                            if (!normalized.flags && script.regexFlags) {
-                                normalized.flags = script.regexFlags;
-                            }
-                            if (!normalized.flags) {
-                                normalized.flags = 'g';
-                            }
-
-                            // CRITICAL: Convert ST's 'disabled' field to 'enabled'
-                            // ST uses: disabled=true (禁用), disabled=false/undefined (启用)
-                            // We use: enabled=true (启用), enabled=false (禁用)
-                            if (!normalized.hasOwnProperty('enabled')) {
-                                // If script has 'disabled' field, use it; otherwise default to enabled
-                                normalized.enabled = script.hasOwnProperty('disabled') ? !script.disabled : true;
-                            }
-
-                            // New Fields
-                            if (!normalized.placement) normalized.placement = script.placement || [1, 2];
-                            if (normalized.markdownOnly === undefined) normalized.markdownOnly = script.markdownOnly || false;
-                            if (normalized.promptOnly === undefined) normalized.promptOnly = script.promptOnly || false;
-                            if (normalized.runOnEdit === undefined) normalized.runOnEdit = script.runOnEdit || false;
-                            if (normalized.minDepth === undefined) normalized.minDepth = script.minDepth || null;
-                            if (normalized.maxDepth === undefined) normalized.maxDepth = script.maxDepth || null;
-
-                            return normalizeRegexScript({ ...normalized, scope: 'character' }, 'character');
-                        }).filter(script => script.scope !== 'global');
-
-                        // Log imported regex scripts status
-                        const enabledScripts = char.regexScripts.filter(s => s.enabled !== false);
-                        console.log(`✓ Imported ${char.regexScripts.length} Regex scripts.`);
-                        if (enabledScripts.length > 0) {
-                            console.log(`✓ Default enabled regex scripts (${enabledScripts.length}):`);
-                            enabledScripts.forEach(script => {
-                                console.log(`  - ${script.name || script.scriptName || 'Unnamed'} (regex: ${(script.regex || script.findRegex || '').substring(0, 50)}...)`);
-                            });
-                        } else {
-                            console.log(`⚠ No regex scripts enabled by default.`);
-                        }
-                    }
-
-                    characters.value.push(char);
-
-                    // Auto-select the new character and enter chat immediately.
-                    const newCharacterIndex = characters.value.length - 1;
-                    showAddCharacterMenu.value = false;
-                    await selectCharacter(newCharacterIndex, true);
-
-                } catch (err) {
-                    console.error("Character processing error:", err);
-                    showToast('解析角色数据失败: ' + err.message, 'error');
-                }
-            };
 
             if (file.type === 'application/json') {
                 const reader = new FileReader();
@@ -10152,7 +10452,22 @@ image###生成的提示词###
             await loadData();
             fetchQuota(); // Fetch quota after saved settings are loaded
 
+            // If logged in & server mode enabled, pull server data AFTER loadData (so DB is initialized)
+            // and merge server data over local. Pull disables push to avoid feedback loop.
+            if (serverSync && serverSync.isServerMode) {
+                try {
+                    await pullServerSyncNow();
+                    showToast('云端数据同步成功', 'success');
+                } catch (e) {
+                    console.warn('[ServerSync] initial pull failed:', e?.message || e);
+                    showToast('云端数据同步失败，使用本地数据', 'error');
+                }
+            }
+
             checkUpdate(); // Check for updates — 必须在 loadData 之后，否则 localStorage 代理中的 update_id 还未从服务端加载
+
+            // 拉取服务端公告（延迟 2 秒，避免与版本更新弹窗同时弹出）
+            setTimeout(() => fetchAndShowAnnouncements(), 2000);
 
             // --- 全局清理废弃正则 (思维隐藏及旧版画图迁移项已清理完毕，保留基础结构) ---
             const obsoleteRegexNames = ['隐藏正文的thinking', 'Nai画图正则-本子风', 'Nai画图正则-竖图'];
@@ -10890,6 +11205,7 @@ image###生成的提示词###
         };
 
         return {
+            serverSync: window.RPHubServerSync,
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
             processMainContent,
             currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
@@ -10898,6 +11214,7 @@ image###生成的提示词###
             showContextViewerModal, lastContextMessages, lastTriggeredWorldInfos, // Context Viewer
             showCharacterExportModal, characterToExportIndex, openCharacterExportModal, confirmCharacterExport, // Character Export Modal
             showUpdateModal, updateCountdown, latestUpdate, closeUpdateModal, isUpdateScrolledToBottom, checkUpdateScroll, // Update Modal
+            showAnnouncementModal, siteAnnouncement, dontShowAnnouncementAgain, closeAnnouncementModal, formatAnnouncementTime, // 站点公告
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, activeToolInlineStatusText, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationToolCallId, activeToolContinuationHasResponse, activeNativeReasoning, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, availableModels, filteredModels, filteredCharacters,
             user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOption, customApiProviderOptions, showApiProviderSelector, selectApiProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
@@ -10908,6 +11225,10 @@ image###生成的提示词###
             lastUserMessageIndex, // Expose to template
             isGeneratorLoading, generatorUrl, onGeneratorLoad, syncSettingsToGenerator, // Generator exports
             isSquareLoading, squareUrl, onSquareLoad, // Square exports
+            // 本站公共库
+            libraryCards, libraryLoading, librarySearchQuery, libraryPage, libraryPageSize, libraryTotal,
+            loadLibraryPage, searchLibrary, downloadLibraryCard, showMySubmissions, deleteMySubmission,
+            mySubmissions, submitCardToLibrary,
             editorTab, characterDisplayLimit, displayedCharacters, loadMoreCharacters,
             isAutoImageGenEnabled,
             apiStatus, apiLatency, imageGenStatus, imageGenLatency, checkAllStatuses, // Status Exports
