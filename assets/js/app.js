@@ -2075,6 +2075,33 @@ createApp({
             return JSON.parse(JSON.stringify(plainValue));
         };
 
+        const GENERATED_IMAGE_REMOVED_TEXT = '[生成图片已清理：图片数据不再写入聊天记录]';
+        const stripDataImagePayloadsFromText = (text) => {
+            if (typeof text !== 'string' || !text.includes('data:image/')) {
+                return { text, changed: false };
+            }
+
+            let cleaned = text
+                .replace(/!\[[^\]]*?\]\(\s*data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+(?:\s+["'][^"']*["'])?\s*\)/gi, GENERATED_IMAGE_REMOVED_TEXT)
+                .replace(/<img\b[^>]*\bsrc\s*=\s*["']data:image\/[^"']+["'][^>]*>/gi, GENERATED_IMAGE_REMOVED_TEXT)
+                .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{128,}/gi, GENERATED_IMAGE_REMOVED_TEXT);
+
+            return { text: cleaned, changed: cleaned !== text };
+        };
+
+        const sanitizeChatHistoryImageData = (messages = []) => {
+            if (!Array.isArray(messages)) return { messages: [], changed: false };
+            let changed = false;
+            const sanitized = messages.map(message => {
+                if (!message || typeof message !== 'object') return message;
+                const contentResult = stripDataImagePayloadsFromText(message.content);
+                if (!contentResult.changed) return message;
+                changed = true;
+                return { ...message, content: contentResult.text };
+            });
+            return { messages: sanitized, changed };
+        };
+
         const storageKey = (name) => `${storagePrefix}${name}`;
         const legacyStorageKey = (name) => `${legacyStoragePrefix}${name}`;
         const scopedStorageKey = (name, id) => `${storageKey(name)}_${id}`;
@@ -2148,7 +2175,11 @@ createApp({
             if (currentCharacterIndex.value < 0 || !currentCharacter.value || !currentCharacter.value.uuid) return;
 
             try {
-                const historyToSave = cloneForStorage(chatHistory.value);
+                const sanitizedHistory = sanitizeChatHistoryImageData(cloneForStorage(chatHistory.value));
+                const historyToSave = sanitizedHistory.messages;
+                if (sanitizedHistory.changed) {
+                    chatHistory.value = prepareLoadedChatHistoryForDisplay(historyToSave);
+                }
                 await setScopedStoredValue('chat', currentCharacter.value.uuid, historyToSave, { clone: false });
             } catch (e) {
                 console.error('Failed to save chat history:', e);
@@ -2294,11 +2325,16 @@ createApp({
                 try {
                     const chat = await getScopedStoredValue('chat', char.uuid);
                     if (chat !== undefined) {
-                        const chatStr = JSON.stringify(chat);
+                        const sanitizedChat = sanitizeChatHistoryImageData(chat);
+                        const chatForSync = sanitizedChat.messages;
+                        if (sanitizedChat.changed) {
+                            await setScopedStoredValue('chat', char.uuid, chatForSync, { clone: false });
+                        }
+                        const chatStr = JSON.stringify(chatForSync);
                         if (chatStr.length <= MAX_SCOPED_SIZE) {
-                            scoped.chat[char.uuid] = chat;
+                            scoped.chat[char.uuid] = chatForSync;
                         } else {
-                            // 聊天记录太大（含 base64 图片），跳过同步，只存本地
+                            // 聊天记录仍然太大，跳过同步，只存本地
                             console.warn('[ServerSync] chat history for', char.uuid, 'too large (' + Math.round(chatStr.length/1024/1024) + 'MB), skipping sync');
                         }
                     }
@@ -2447,7 +2483,12 @@ createApp({
                             const lTs = localMeta[`scoped:${name}:${id}`] || 0;
                             if (sTs >= lTs) {
                                 // remote is newer or equal — overwrite local
-                                try { await setScopedStoredValue(name, id, value); } catch (_) {}
+                                try {
+                                    const nextValue = name === 'chat'
+                                        ? sanitizeChatHistoryImageData(value).messages
+                                        : value;
+                                    await setScopedStoredValue(name, id, nextValue);
+                                } catch (_) {}
                             } else {
                                 // local is newer — keep local, will be pushed
                                 hasLocalNewer = true;
@@ -4449,6 +4490,9 @@ ${content}
             if (renderMarkdownCache.has(cacheKey)) return renderMarkdownCache.get(cacheKey);
 
             let processed = text;
+            if (role === 'assistant' || role === 'user') {
+                processed = stripDataImagePayloadsFromText(processed).text;
+            }
 
             // Apply regex for display (real-time)
             processed = skipRegex ? processed : processRegex(processed, { isDisplay: true, role: role });
@@ -10324,32 +10368,6 @@ image###生成的提示词###
                     el.style.minHeight = '';
                     el.style.minWidth = '';
                     el.setAttribute('data-done', '1'); // 标记为已完成，防止刷新后重复生图
-                    // 持久化：把 base64 图片写回聊天记录，替换占位符，刷新后直接显示
-                    try {
-                        const blobToDataUrl = async (blob) => {
-                            return new Promise((resolve, reject) => {
-                                const r = new FileReader();
-                                r.onload = () => resolve(r.result);
-                                r.onerror = reject;
-                                r.readAsDataURL(blob);
-                            });
-                        };
-                        if (imageResult.blob) {
-                            const dataUrl = await blobToDataUrl(imageResult.blob);
-                            const tags = el.getAttribute('data-tags') || '';
-                            // 在当前消息内容中把 image###tags### 替换为 base64 图片 markdown
-                            const imgMarkdown = `![生成图片](${dataUrl})`;
-                            for (const msg of chatHistory.value) {
-                                if (msg && msg.content && msg.content.includes(`image###${tags}###`)) {
-                                    msg.content = msg.content.replace(`image###${tags}###`, imgMarkdown);
-                                    break;
-                                }
-                            }
-                            scheduleChatHistorySave();
-                        }
-                    } catch (persistErr) {
-                        console.warn('[NAI] persist image to chat history failed:', persistErr);
-                    }
                 } catch (e) {
                     if (e?.isPendingImageResponse) {
                         const retryCount = Number.parseInt(el.getAttribute('data-retry-count') || '0', 10) || 0;
@@ -10396,7 +10414,7 @@ image###生成的提示词###
             saveData();
         });
 
-        const prepareLoadedChatHistoryForDisplay = (messages = []) => messages
+        const prepareLoadedChatHistoryForDisplay = (messages = []) => sanitizeChatHistoryImageData(messages).messages
             .filter(msg => msg !== null && msg !== undefined)
             .map(msg => {
                 if (msg.isSelf === undefined) {
