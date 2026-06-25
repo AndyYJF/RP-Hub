@@ -942,16 +942,14 @@ createApp({
         };
         const getNovelAiGenerateUrl = () => {
             const baseUrl = getImageGenBaseUrl();
-            // 如果用户填的 URL 已经包含路径（非根域名），直接用作完整端点
-            // 否则追加标准 NovelAI 路径
+            // NovelAI 原生协议：直接用用户配置的完整 URL，不追加任何路径
+            // 用户应该在设置里填写完整的 API 端点（如 https://xxx/api/generate-direct）
             const path = getImageGenUrlPath(baseUrl);
-            if (path && path !== '' && isImageGenDirectEndpoint(baseUrl)) {
+            if (path && path !== '') {
+                // 有路径，直接用
                 return baseUrl;
             }
-            // 自定义 provider 且 NovelAI 原生协议：如果 URL 有路径就直接用
-            if (isCustomImageGenProviderId(settings.imageGenProviderId) && path && path !== '') {
-                return baseUrl;
-            }
+            // 没有路径（纯域名），追加标准 NovelAI 端点
             return joinImageGenUrl(baseUrl, '/ai/generate-image');
         };
         normalizeImageGenProviderSettings();
