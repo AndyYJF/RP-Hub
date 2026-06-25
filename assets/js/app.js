@@ -1050,9 +1050,11 @@ createApp({
         let isLoadingEarlierChatMessages = false;
         let isChatTopUnlockArmed = true;
         const lastActiveCharacterId = ref(null); // For persistence
+        const lastActiveCharacterIndexFallback = ref(null);
         const getCharacterIndexByPersistentId = (value) => {
             if (typeof value === 'string' && value) {
-                return characters.value.findIndex(char => char && char.uuid === value);
+                const uuidIndex = characters.value.findIndex(char => char && char.uuid === value);
+                if (uuidIndex >= 0) return uuidIndex;
             }
             if (Number.isInteger(value) && value >= 0 && characters.value[value]) return value;
             const numericValue = Number(value);
@@ -2305,6 +2307,7 @@ createApp({
             if (role !== 'assistant' || !text) return text;
             const messageId = renderOptions.messageId || renderOptions.id || '';
             const artists = getCurrentNaiImageArtists();
+            const deferAutoGeneration = !!(renderOptions._loadedFromStorage || renderOptions.isLoadedFromStorage);
             let directiveIndex = 0;
             return String(text).replace(GENERATED_IMAGE_CACHE_TOKEN_REGEX, (full, cachedKey, tags) => {
                 const currentIndex = directiveIndex++;
@@ -2316,6 +2319,15 @@ createApp({
                     tags,
                     artists
                 });
+                if (deferAutoGeneration) {
+                    return createNaiCachedImageHtml(createGeneratedImageCachePayload({
+                        cacheKey,
+                        tags,
+                        artists,
+                        messageId,
+                        directiveIndex: currentIndex
+                    }));
+                }
                 return createNaiPendingImageHtml({ cacheKey, messageId, directiveIndex: currentIndex, tags, artists });
             });
         };
@@ -2323,40 +2335,17 @@ createApp({
         const stripGeneratedImageCacheMarkersFromText = (text) => String(text || '')
             .replace(/image-cache###[^#]+###/g, '');
 
-        const markHistoricalNaiImageDirectives = (message) => {
-            if (!message || message.role !== 'assistant' || typeof message.content !== 'string' || !message.content.includes('image###')) return message;
-            const artists = getCurrentNaiImageArtists();
-            let directiveIndex = 0;
-            let changed = false;
-            message.content = message.content.replace(GENERATED_IMAGE_CACHE_TOKEN_REGEX, (full, cachedKey, tags) => {
-                const currentIndex = directiveIndex++;
-                if (cachedKey) return full;
-                changed = true;
-                const cacheKey = buildGeneratedImageCacheKey({
-                    messageId: message.id,
-                    directiveIndex: currentIndex,
-                    tags,
-                    artists
-                });
-                return createGeneratedImageCacheMarker({
-                    cacheKey,
-                    tags,
-                    artists,
-                    messageId: message.id,
-                    directiveIndex: currentIndex
-                });
-            });
-            if (changed) message._imageDirectivesMigrated = true;
-            return message;
-        };
-
-        const setGeneratedImageCache = async (cacheKey, imageResult) => {
+        const setGeneratedImageCache = async (cacheKey, imageResult, meta = {}) => {
             if (!cacheKey || !imageResult) return;
             const record = {
                 createdAt: Date.now(),
                 url: imageResult.url || '',
                 mimeType: imageResult.blob?.type || 'image/png',
-                blob: imageResult.blob || null
+                blob: imageResult.blob || null,
+                tags: String(meta.tags || ''),
+                artists: String(meta.artists || ''),
+                model: String(meta.model || ''),
+                size: String(meta.size || '')
             };
             await setStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`, record, { clone: false });
         };
@@ -2364,6 +2353,14 @@ createApp({
         const getGeneratedImageCache = async (cacheKey) => {
             if (!cacheKey) return null;
             return getStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`);
+        };
+
+        const stripRuntimeMessageFieldsForStorage = (message) => {
+            if (!message || typeof message !== 'object') return message;
+            const nextMessage = { ...message };
+            delete nextMessage._loadedFromStorage;
+            delete nextMessage._imageDirectivesMigrated;
+            return nextMessage;
         };
 
         const markNaiImageDirectiveGenerated = async (el) => {
@@ -2406,7 +2403,7 @@ createApp({
 
             try {
                 const sanitizedHistory = sanitizeChatHistoryImageData(cloneForStorage(chatHistory.value));
-                const historyToSave = sanitizedHistory.messages;
+                const historyToSave = sanitizedHistory.messages.map(stripRuntimeMessageFieldsForStorage);
                 if (sanitizedHistory.changed) {
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(historyToSave);
                 }
@@ -2484,6 +2481,7 @@ createApp({
                     if (activeRef) {
                         await setStoredValue('last_active_char', activeRef.index);
                         if (activeRef.uuid) await setStoredValue('last_active_char_uuid', activeRef.uuid);
+                        lastActiveCharacterIndexFallback.value = activeRef.index;
                         lastActiveCharacterId.value = activeRef.uuid || activeRef.index;
                     }
                     await saveChatHistoryNow();
@@ -2551,7 +2549,7 @@ createApp({
                 user: user,
                 user_profiles: JSON.parse(JSON.stringify(userProfiles.value)),
                 active_profile_id: activeProfileId.value,
-                last_active_char: activeRef ? activeRef.index : null,
+                last_active_char: activeRef ? activeRef.index : lastActiveCharacterIndexFallback.value,
                 last_active_char_uuid: activeRef?.uuid || (typeof lastActiveCharacterId.value === 'string' ? lastActiveCharacterId.value : null),
                 memory_settings: memorySettings,
             };
@@ -2702,6 +2700,9 @@ createApp({
                             case 'last_active_char':
                                 if (lastActiveCharacterId.value === null && g.last_active_char !== null && g.last_active_char !== undefined) {
                                     lastActiveCharacterId.value = g.last_active_char;
+                                }
+                                if (g.last_active_char !== null && g.last_active_char !== undefined) {
+                                    lastActiveCharacterIndexFallback.value = g.last_active_char;
                                 }
                                 break;
                             case 'last_active_char_uuid':
@@ -2930,6 +2931,9 @@ createApp({
                 // Load Last Active Character (UUID first, legacy index as fallback)
                 const lastCharUuid = await getStoredValue('last_active_char_uuid');
                 const lastCharIndex = await getStoredValue('last_active_char');
+                if (lastCharIndex !== undefined) {
+                    lastActiveCharacterIndexFallback.value = lastCharIndex;
+                }
                 if (lastCharUuid) {
                     lastActiveCharacterId.value = lastCharUuid;
                 } else if (lastCharIndex !== undefined) {
@@ -10719,7 +10723,12 @@ image###生成的提示词###
                     }
                     const imageResult = await extractNaiImageResult(resp);
                     const imgUrl = imageResult.url || URL.createObjectURL(imageResult.blob);
-                    await setGeneratedImageCache(el.getAttribute('data-cache-key') || '', imageResult);
+                    await setGeneratedImageCache(el.getAttribute('data-cache-key') || '', imageResult, {
+                        tags,
+                        artists,
+                        model,
+                        size: settings.imageSize
+                    });
                     renderNaiImageElement(el, imgUrl);
                     el.setAttribute('data-done', '1'); // 标记为已完成，防止刷新后重复生图
                     await markNaiImageDirectiveGenerated(el);
@@ -10777,7 +10786,7 @@ image###生成的提示词###
                 if (!msg.id && ['user', 'assistant', 'system'].includes(msg.role)) {
                     msg.id = generateUUID();
                 }
-                markHistoricalNaiImageDirectives(msg);
+                msg._loadedFromStorage = true;
                 if (msg.isSelf === undefined) {
                     msg.isSelf = msg.role === 'user';
                 }
@@ -10790,14 +10799,6 @@ image###生成的提示词###
                 }
                 return msg;
             });
-
-        const saveLoadedChatHistoryIfImageDirectivesMigrated = () => {
-            if (!chatHistory.value.some(msg => msg?._imageDirectivesMigrated)) return;
-            chatHistory.value.forEach(msg => {
-                if (msg) delete msg._imageDirectivesMigrated;
-            });
-            saveChatHistoryNow();
-        };
 
         const selectCharacter = async (index, isNewImport = false) => {
             if (isConversationBusy.value) {
@@ -10836,7 +10837,6 @@ image###生成的提示词###
                 const savedChat = await getScopedStoredValue('chat', char.uuid);
                 if (savedChat && savedChat.length > 0) {
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
-                    saveLoadedChatHistoryIfImageDirectivesMigrated();
                 } else {
                     chatHistory.value = [];
                     if (char.first_mes) {
@@ -12045,7 +12045,10 @@ image###生成的提示词###
             _initComplete = true;
 
             // Restore Last Active Session
-            const restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterId.value);
+            let restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterId.value);
+            if (restoredCharacterIndex < 0) {
+                restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterIndexFallback.value);
+            }
             if (restoredCharacterIndex >= 0) {
                 // Restore character selection without clearing chat history (we load it from DB)
                 _isApplyingCharacterScopedData = true;
@@ -12061,6 +12064,7 @@ image###生成的提示词###
                     saveData();
                 }
                 lastActiveCharacterId.value = char.uuid || currentCharacterIndex.value;
+                lastActiveCharacterIndexFallback.value = currentCharacterIndex.value;
                 await setStoredValue('last_active_char', currentCharacterIndex.value);
                 if (char.uuid) await setStoredValue('last_active_char_uuid', char.uuid);
                 loadGlobalUiTemplateRuntimeForCharacter(char);
@@ -12075,7 +12079,6 @@ image###生成的提示词###
 
                     if (savedChat && Array.isArray(savedChat) && savedChat.length > 0) {
                         chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
-                        saveLoadedChatHistoryIfImageDirectivesMigrated();
                     } else if (char.first_mes) {
                         chatHistory.value = [{
                             role: 'assistant',
