@@ -11,6 +11,7 @@ router.use(authRequired);
 router.post('/nai-generate', async (req, res, next) => {
   try {
     const { targetUrl, token, body } = req.body || {};
+    console.log('[NAI Proxy] targetUrl:', targetUrl, 'token:', token ? token.slice(0, 6) + '***' : '(empty)');
     if (!targetUrl || !token || !body) {
       return res.status(400).json({ error: '缺少 targetUrl / token / body' });
     }
