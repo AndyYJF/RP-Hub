@@ -712,6 +712,7 @@ createApp({
             temperature: 1.0,
             autoFetchModels: true,
             stream: true,
+            useChatProxy: false, // 开启后对话请求经后端代理转发，记录 token 用量
             activeToolAggressiveness: 'adaptive',
             activeToolAggressivenessVersion: 2,
 
@@ -6331,19 +6332,25 @@ ${content}
             };
 
             try {
-                        const url = settings.apiUrl.endsWith('/v1') ? `${settings.apiUrl}/chat/completions` : `${settings.apiUrl}/v1/chat/completions`;
-                        const response = await fetch(url, {
+            const url = settings.apiUrl.endsWith('/v1') ? `${settings.apiUrl}/chat/completions` : `${settings.apiUrl}/v1/chat/completions`;
+            // 对话代理：useChatProxy 开启时走后端代理记录用量
+            const chatProxyUrl = (window.RPHubServerSync?.baseUrl || '') + '/api/proxy/chat';
+            const useProxy = settings.useChatProxy && window.RPHubServerSync?.isLoggedIn && chatProxyUrl;
+            const finalUrl = useProxy ? chatProxyUrl : url;
+            const finalHeaders = useProxy
+                ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${window.RPHubServerSync.accessToken}` }
+                : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` };
+            const finalBody = useProxy
+                ? JSON.stringify({ targetUrl: url, apiKey: settings.apiKey, ...JSON.parse(JSON.stringify({ model: settings.uiTemplateModel || fallbackModel, messages: apiMessages, temperature: settings.temperature, stream: false })) })
+                : JSON.stringify({ model: settings.uiTemplateModel || fallbackModel, messages: apiMessages, temperature: settings.temperature, stream: false });
+                        const response = await fetch(useProxy ? chatProxyUrl : url, {
                             method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${settings.apiKey}`
-                            },
-                            body: JSON.stringify({
-                                model: settings.model,
-                                messages: apiMessages,
-                                temperature: settings.temperature,
-                                stream: settings.stream
-                            }),
+                            headers: useProxy
+                                ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${window.RPHubServerSync.accessToken}` }
+                                : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` },
+                            body: useProxy
+                                ? JSON.stringify({ targetUrl: url, apiKey: settings.apiKey, model: settings.model, messages: apiMessages, temperature: settings.temperature, stream: settings.stream })
+                                : JSON.stringify({ model: settings.model, messages: apiMessages, temperature: settings.temperature, stream: settings.stream }),
                             signal: abortController.value.signal
                         });
 

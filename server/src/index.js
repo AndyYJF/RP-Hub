@@ -12,6 +12,7 @@ import libraryRoutes from './routes/library.js';
 import adminRoutes from './routes/admin.js';
 import announcementsRoutes from './routes/announcements.js';
 import proxyRoutes from './routes/proxy.js';
+import chatProxyRoutes from './routes/chatProxy.js';
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use('/api/library', libraryRoutes);
 app.use('/api/announcements', announcementsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/proxy', proxyRoutes);
+app.use('/api/proxy', chatProxyRoutes);
 
 // ---------- Static frontend hosting (optional) ----------
 if (config.staticDir && fs.existsSync(config.staticDir)) {

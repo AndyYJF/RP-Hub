@@ -189,7 +189,11 @@ function storeRefresh(userId, token) {
   // Limit to 5 refresh tokens per user
   const count = db.prepare('SELECT COUNT(*) as c FROM refresh_tokens WHERE user_id = ?').get(userId).c;
   if (count >= 5) {
-    db.prepare('DELETE FROM refresh_tokens WHERE user_id = ? ORDER BY created_at ASC LIMIT ?').run(userId, count - 4);
+    // node:sqlite doesn't support DELETE ... ORDER BY ... LIMIT, use subquery instead
+    const oldIds = db.prepare('SELECT id FROM refresh_tokens WHERE user_id = ? ORDER BY created_at ASC LIMIT ?').all(userId, count - 4);
+    for (const row of oldIds) {
+      db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(row.id);
+    }
   }
   db.prepare(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?)'
