@@ -10246,6 +10246,10 @@ image###生成的提示词###
             const [width, height] = NAI_SIZE_MAP[settings.imageSize] || [832, 1216];
             const model = settings.imageGenModel || 'nai-diffusion-4-5-full';
             const maxQueueRetries = 6;
+            // 通过后端代理转发，避免浏览器跨域 CORS 限制
+            const sync = window.RPHubServerSync;
+            const proxyUrl = sync && sync.baseUrl ? sync.baseUrl + '/api/proxy/nai-generate' : null;
+            const authToken = sync && sync.accessToken ? sync.accessToken : null;
 
             for (const el of placeholders) {
                 el.setAttribute('data-loaded', '1'); // mark as processing
@@ -10253,33 +10257,45 @@ image###生成的提示词###
                 const artists = el.getAttribute('data-artists') || '';
                 const input = [artists, tags].filter(Boolean).join(', ');
                 try {
-                    const resp = await fetch(generateUrl, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            input,
-                            model,
-                            action: 'generate',
-                            parameters: {
-                                params_version: 3,
-                                width, height,
-                                scale: 6,
-                                sampler: 'k_dpmpp_2m_sde',
-                                steps: 28,
-                                seed: Math.floor(Math.random() * 4294967295),
-                                n_samples: 1,
-                                ucPreset: 0,
-                                qualityToggle: true,
-                                dynamic_thresholding: false,
-                                controlnet_strength: 1,
-                                legacy: false,
-                                add_original_image: false,
-                                noise_schedule: 'karras',
-                                legacy_v3_extend: false,
-                                negative_prompt: NAI_NEGATIVE,
-                            }
-                        })
-                    });
+                    let resp;
+                    const naiBody = {
+                        input,
+                        model,
+                        action: 'generate',
+                        parameters: {
+                            params_version: 3,
+                            width, height,
+                            scale: 6,
+                            sampler: 'k_dpmpp_2m_sde',
+                            steps: 28,
+                            seed: Math.floor(Math.random() * 4294967295),
+                            n_samples: 1,
+                            ucPreset: 0,
+                            qualityToggle: true,
+                            dynamic_thresholding: false,
+                            controlnet_strength: 1,
+                            legacy: false,
+                            add_original_image: false,
+                            noise_schedule: 'karras',
+                            legacy_v3_extend: false,
+                            negative_prompt: NAI_NEGATIVE,
+                        }
+                    };
+                    if (proxyUrl && authToken) {
+                        // 走后端代理（同源，无 CORS 问题）
+                        resp = await fetch(proxyUrl, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ targetUrl: generateUrl, token, body: naiBody })
+                        });
+                    } else {
+                        // 直连（可能被 CORS 拦截，作为后备）
+                        resp = await fetch(generateUrl, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify(naiBody)
+                        });
+                    }
                     if (!resp.ok) {
                         const detail = await resp.text().catch(() => '');
                         throw new Error(`HTTP ${resp.status}${detail ? `: ${detail.slice(0, 180)}` : ''}`);
