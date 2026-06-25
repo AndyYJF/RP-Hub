@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
+﻿const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
 // Configure marked to disable indented code blocks
 // This allows indented HTML (like details/summary) to be rendered as HTML instead of code
@@ -6336,13 +6336,6 @@ ${content}
             // 对话代理：useChatProxy 开启时走后端代理记录用量
             const chatProxyUrl = (window.RPHubServerSync?.baseUrl || '') + '/api/proxy/chat';
             const useProxy = settings.useChatProxy && window.RPHubServerSync?.isLoggedIn && chatProxyUrl;
-            const finalUrl = useProxy ? chatProxyUrl : url;
-            const finalHeaders = useProxy
-                ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${window.RPHubServerSync.accessToken}` }
-                : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` };
-            const finalBody = useProxy
-                ? JSON.stringify({ targetUrl: url, apiKey: settings.apiKey, ...JSON.parse(JSON.stringify({ model: settings.uiTemplateModel || fallbackModel, messages: apiMessages, temperature: settings.temperature, stream: false })) })
-                : JSON.stringify({ model: settings.uiTemplateModel || fallbackModel, messages: apiMessages, temperature: settings.temperature, stream: false });
                         const response = await fetch(useProxy ? chatProxyUrl : url, {
                             method: 'POST',
                             headers: useProxy
