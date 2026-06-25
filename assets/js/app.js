@@ -2184,8 +2184,7 @@ createApp({
 
         const GENERATED_IMAGE_CACHE_KEY_PREFIX = 'generated_image_cache:';
         const GENERATED_IMAGE_CACHE_VERSION = 'nai-v1';
-        const GENERATED_IMAGE_CACHE_TOKEN_REGEX = /image-cache###([A-Za-z0-9_-]+)###|image###([\s\S]*?)###/g;
-        const GENERATED_IMAGE_CACHE_MISSING_HTML = '<div style="color: #777; font-size: 13px; padding: 20px; text-align: center; line-height: 1.6;"><div>图片已生成</div><div style="font-size: 12px; color: #999;">本机缓存中未找到原图，已跳过自动重新生成</div></div>';
+        const GENERATED_IMAGE_CACHE_TOKEN_REGEX = /image-cache###([^#]+)###|image###([\s\S]*?)###/g;
 
         const hashTextForKey = (text) => {
             let hash = 2166136261;
@@ -2195,6 +2194,25 @@ createApp({
                 hash = Math.imul(hash, 16777619);
             }
             return (hash >>> 0).toString(16).padStart(8, '0');
+        };
+
+        const encodeBase64Url = (text) => {
+            const bytes = new TextEncoder().encode(String(text || ''));
+            let binary = '';
+            const chunkSize = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                binary += String.fromCharCode(...bytes.slice(i, i + chunkSize));
+            }
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        };
+
+        const decodeBase64Url = (text) => {
+            const normalized = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+            const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+            const binary = atob(padded);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new TextDecoder().decode(bytes);
         };
 
         const escapeHtmlAttribute = (value) => String(value || '')
@@ -2230,6 +2248,35 @@ createApp({
             ].join('_');
         };
 
+        const createGeneratedImageCachePayload = ({ cacheKey, tags, artists, messageId, directiveIndex }) => {
+            const meta = {
+                tags: String(tags || ''),
+                artists: String(artists || ''),
+                messageId: String(messageId || ''),
+                directiveIndex: Number.isFinite(Number(directiveIndex)) ? Number(directiveIndex) : 0
+            };
+            return `${cacheKey}~${encodeBase64Url(JSON.stringify(meta))}`;
+        };
+
+        const parseGeneratedImageCachePayload = (payload) => {
+            const [cacheKey, encodedMeta] = String(payload || '').split('~');
+            const result = { cacheKey: cacheKey || '', tags: '', artists: '', messageId: '', directiveIndex: 0, hasMeta: false };
+            if (!encodedMeta) return result;
+            try {
+                const meta = JSON.parse(decodeBase64Url(encodedMeta));
+                result.tags = String(meta.tags || '');
+                result.artists = String(meta.artists || '');
+                result.messageId = String(meta.messageId || '');
+                result.directiveIndex = Number.isFinite(Number(meta.directiveIndex)) ? Number(meta.directiveIndex) : 0;
+                result.hasMeta = !!result.tags;
+            } catch (e) {
+                console.warn('Failed to parse generated image cache meta:', e);
+            }
+            return result;
+        };
+
+        const createGeneratedImageCacheMarker = (options) => `image-cache###${createGeneratedImageCachePayload(options)}###`;
+
         const createNaiPendingImageHtml = ({ cacheKey, messageId, directiveIndex, tags, artists }) => (
             '<div class="nai-pending-image"'
             + ` data-cache-key="${escapeHtmlAttribute(cacheKey)}"`
@@ -2241,12 +2288,18 @@ createApp({
             + '<div style="color: #999; font-size: 13px; padding: 20px;">生成图片中...</div></div>'
         );
 
-        const createNaiCachedImageHtml = (cacheKey) => (
-            '<div class="nai-cached-image"'
-            + ` data-cache-key="${escapeHtmlAttribute(cacheKey)}"`
-            + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
-            + '<div style="color: #999; font-size: 13px; padding: 20px;">加载图片缓存...</div></div>'
-        );
+        const createNaiCachedImageHtml = (payload) => {
+            const meta = parseGeneratedImageCachePayload(payload);
+            return '<div class="nai-cached-image"'
+                + ` data-cache-key="${escapeHtmlAttribute(meta.cacheKey)}"`
+                + ` data-cache-payload="${escapeHtmlAttribute(payload)}"`
+                + ` data-message-id="${escapeHtmlAttribute(meta.messageId)}"`
+                + ` data-directive-index="${escapeHtmlAttribute(meta.directiveIndex)}"`
+                + ` data-tags="${escapeHtmlAttribute(meta.tags)}"`
+                + ` data-artists="${escapeHtmlAttribute(meta.artists)}"`
+                + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
+                + '<div style="color: #999; font-size: 13px; padding: 20px;">加载图片缓存...</div></div>';
+        };
 
         const replaceNativeNaiImageTokensForDisplay = (text, role, renderOptions = {}) => {
             if (role !== 'assistant' || !text) return text;
@@ -2268,7 +2321,7 @@ createApp({
         };
 
         const stripGeneratedImageCacheMarkersFromText = (text) => String(text || '')
-            .replace(/image-cache###[A-Za-z0-9_-]+###/g, '');
+            .replace(/image-cache###[^#]+###/g, '');
 
         const markHistoricalNaiImageDirectives = (message) => {
             if (!message || message.role !== 'assistant' || typeof message.content !== 'string' || !message.content.includes('image###')) return message;
@@ -2285,7 +2338,13 @@ createApp({
                     tags,
                     artists
                 });
-                return `image-cache###${cacheKey}###`;
+                return createGeneratedImageCacheMarker({
+                    cacheKey,
+                    tags,
+                    artists,
+                    messageId: message.id,
+                    directiveIndex: currentIndex
+                });
             });
             if (changed) message._imageDirectivesMigrated = true;
             return message;
@@ -2314,7 +2373,7 @@ createApp({
             if (!cacheKey || !messageId || !Number.isFinite(directiveIndex) || directiveIndex < 0) return;
 
             const message = chatHistory.value.find(msg => msg && msg.id === messageId);
-            if (!message || typeof message.content !== 'string' || message.content.includes(`image-cache###${cacheKey}###`)) return;
+            if (!message || typeof message.content !== 'string' || message.content.includes(`image-cache###${cacheKey}`)) return;
 
             let tokenIndex = 0;
             let changed = false;
@@ -2322,7 +2381,13 @@ createApp({
                 const currentIndex = tokenIndex++;
                 if (currentIndex !== directiveIndex || cachedKey) return full;
                 changed = true;
-                return `image-cache###${cacheKey}###`;
+                return createGeneratedImageCacheMarker({
+                    cacheKey,
+                    tags: el.getAttribute('data-tags') || '',
+                    artists: el.getAttribute('data-artists') || '',
+                    messageId,
+                    directiveIndex
+                });
             });
 
             if (!changed) return;
@@ -10498,6 +10563,72 @@ image###生成的提示词###
             el.style.minWidth = '';
         };
 
+        const createNaiMissingCacheHtml = (hasPromptMeta) => {
+            const hint = hasPromptMeta
+                ? '本机缓存中未找到原图，可手动重新生成'
+                : '旧记录缺少原始提示词，点击后输入 tags 重新生成';
+            return `<div style="color: #777; font-size: 13px; padding: 18px; text-align: center; line-height: 1.6;">
+                <div>图片已生成</div>
+                <div style="font-size: 12px; color: #999;">${hint}</div>
+                <button type="button" class="nai-regenerate-image" style="margin-top: 10px; padding: 6px 12px; border-radius: 999px; border: 1px solid rgba(148,163,184,0.45); background: rgba(255,255,255,0.82); color: #4f46e5; font-size: 12px; font-weight: 700; cursor: pointer;">重新生成</button>
+            </div>`;
+        };
+
+        const setNaiMissingCacheState = (el) => {
+            const tags = el.getAttribute('data-tags') || '';
+            el.innerHTML = createNaiMissingCacheHtml(!!tags);
+            el.setAttribute('data-missing-cache', '1');
+        };
+
+        const regenerateCachedNaiImage = (el) => {
+            if (!el) return;
+            if (settings.imageGenProtocol !== 'novelai_native') {
+                showToast('请先切换到 NovelAI 原生协议后再重新生成', 'warning');
+                return;
+            }
+            if (!settings.imageGenKey.trim()) {
+                showToast('请先配置生图 Key', 'warning');
+                return;
+            }
+
+            let tags = el.getAttribute('data-tags') || '';
+            if (!tags.trim()) {
+                tags = window.prompt('这条旧记录缺少原始生图提示词，请输入用于重新生成的 tags：', '') || '';
+                tags = tags.trim();
+                if (!tags) return;
+                el.setAttribute('data-tags', tags);
+            }
+            if (!el.getAttribute('data-artists')) {
+                el.setAttribute('data-artists', getCurrentNaiImageArtists());
+            }
+            if (!el.getAttribute('data-directive-index')) {
+                el.setAttribute('data-directive-index', '0');
+            }
+            el.classList.remove('nai-cached-image');
+            el.classList.add('nai-pending-image');
+            el.removeAttribute('data-loaded');
+            el.removeAttribute('data-missing-cache');
+            el.removeAttribute('data-done');
+            el.removeAttribute('data-retry-count');
+            el.innerHTML = '<div style="color: #999; font-size: 13px; padding: 20px;">生成图片中...</div>';
+            el.style.background = 'rgba(200,200,200,0.15)';
+            el.style.minHeight = '120px';
+            el.style.minWidth = '120px';
+            processPendingNaiImages();
+        };
+
+        const handleNaiRegenerateClick = (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const button = target.closest('.nai-regenerate-image');
+            if (!button) return;
+            const el = button.closest('.nai-cached-image');
+            if (!el) return;
+            event.preventDefault();
+            event.stopPropagation();
+            regenerateCachedNaiImage(el);
+        };
+
         const processCachedNaiImages = async () => {
             const placeholders = document.querySelectorAll('.nai-cached-image:not([data-loaded])');
             if (!placeholders.length) return;
@@ -10513,13 +10644,11 @@ image###生成的提示词###
                         renderNaiImageElement(el, cached.url);
                         el.setAttribute('data-done', '1');
                     } else {
-                        el.innerHTML = GENERATED_IMAGE_CACHE_MISSING_HTML;
-                        el.setAttribute('data-missing-cache', '1');
+                        setNaiMissingCacheState(el);
                     }
                 } catch (e) {
                     console.warn('Failed to load cached NAI image:', e);
-                    el.innerHTML = GENERATED_IMAGE_CACHE_MISSING_HTML;
-                    el.setAttribute('data-missing-cache', '1');
+                    setNaiMissingCacheState(el);
                 }
             }
         };
@@ -12047,6 +12176,7 @@ image###生成的提示词###
             }
             window.addEventListener('orientationchange', handleMobileOrientationChange, { passive: true });
             window.addEventListener('resize', handleMobileViewportResize, { passive: true });
+            document.addEventListener('click', handleNaiRegenerateClick);
             scheduleMobileVisualViewportSync({ force: true });
 
             // --- 全局点击外部区域收起面板 ---
@@ -12073,6 +12203,7 @@ image###生成的提示词###
             }
             window.removeEventListener('orientationchange', handleMobileOrientationChange);
             window.removeEventListener('resize', handleMobileViewportResize);
+            document.removeEventListener('click', handleNaiRegenerateClick);
             if (mobileViewportRaf) cancelAnimationFrame(mobileViewportRaf);
             clearTimeout(mobileKeyboardBlurTimer);
         });
