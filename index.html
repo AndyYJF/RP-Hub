@@ -645,7 +645,7 @@
                                             class="cursor-pointer hover:opacity-80 transition-opacity" title="点击收起">
                                             <div class="markdown-body"
                                                 :style="settings.fontSize ? { fontSize: settings.fontSize + 'px' } : {}"
-                                                v-html="renderMarkdown(msg.content, msg.role)">
+                                                v-html="renderMarkdown(msg.content, msg.role, false, msg)">
                                             </div>
                                         </div>
 
@@ -799,7 +799,7 @@
                                                     <div v-if="processMainContent(parseCot(msg.content).main, true).text"
                                                         class="markdown-body"
                                                         :style="settings.fontSize ? { fontSize: settings.fontSize + 'px' } : {}"
-                                                        v-html="renderMarkdown(processMainContent(parseCot(msg.content).main, true).text, msg.role)">
+                                                        v-html="renderMarkdown(processMainContent(parseCot(msg.content).main, true).text, msg.role, false, msg)">
                                                     </div>
                                                     <div v-if="processMainContent(parseCot(msg.content).main, true).showSpinner"
                                                         class="flex flex-col items-center justify-center p-8 w-full mt-2 gap-4 opacity-90">
@@ -812,7 +812,7 @@
                                                 <template v-else>
                                                     <div class="markdown-body"
                                                         :style="settings.fontSize ? { fontSize: settings.fontSize + 'px' } : {}"
-                                                        v-html="renderMarkdown(processMainContent(parseCot(msg.content).main, false).text, msg.role)">
+                                                        v-html="renderMarkdown(processMainContent(parseCot(msg.content).main, false).text, msg.role, false, msg)">
                                                     </div>
                                                 </template>
                                             </template>

@@ -1050,6 +1050,22 @@ createApp({
         let isLoadingEarlierChatMessages = false;
         let isChatTopUnlockArmed = true;
         const lastActiveCharacterId = ref(null); // For persistence
+        const getCharacterIndexByPersistentId = (value) => {
+            if (typeof value === 'string' && value) {
+                return characters.value.findIndex(char => char && char.uuid === value);
+            }
+            if (Number.isInteger(value) && value >= 0 && characters.value[value]) return value;
+            const numericValue = Number(value);
+            if (Number.isInteger(numericValue) && numericValue >= 0 && characters.value[numericValue]) return numericValue;
+            return -1;
+        };
+
+        const getCurrentActiveCharacterReference = () => {
+            if (currentCharacterIndex.value < 0 || !characters.value[currentCharacterIndex.value]) return null;
+            const char = characters.value[currentCharacterIndex.value];
+            return { index: currentCharacterIndex.value, uuid: char.uuid || '' };
+        };
+
         function hasActiveToolContinuationWork() {
             return !!(activeToolContinuationPending.value || (
                 activeToolContinuationMessageId.value
@@ -2165,6 +2181,155 @@ createApp({
         const getStoredValue = (name) => dbGetWithLegacy(storageKey(name), legacyStorageKey(name));
         const setScopedStoredValue = (name, id, value, options = {}) => dbSet(scopedStorageKey(name, id), value, options);
         const getScopedStoredValue = (name, id) => dbGetWithLegacy(scopedStorageKey(name, id), legacyScopedStorageKey(name, id));
+
+        const GENERATED_IMAGE_CACHE_KEY_PREFIX = 'generated_image_cache:';
+        const GENERATED_IMAGE_CACHE_VERSION = 'nai-v1';
+        const GENERATED_IMAGE_CACHE_TOKEN_REGEX = /image-cache###([A-Za-z0-9_-]+)###|image###([\s\S]*?)###/g;
+        const GENERATED_IMAGE_CACHE_MISSING_HTML = '<div style="color: #777; font-size: 13px; padding: 20px; text-align: center; line-height: 1.6;"><div>图片已生成</div><div style="font-size: 12px; color: #999;">本机缓存中未找到原图，已跳过自动重新生成</div></div>';
+
+        const hashTextForKey = (text) => {
+            let hash = 2166136261;
+            const value = String(text || '');
+            for (let i = 0; i < value.length; i++) {
+                hash ^= value.charCodeAt(i);
+                hash = Math.imul(hash, 16777619);
+            }
+            return (hash >>> 0).toString(16).padStart(8, '0');
+        };
+
+        const escapeHtmlAttribute = (value) => String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+
+        const getCurrentNaiImageArtists = () => {
+            const regex = regexScripts.value.find(r => (r.name || r.scriptName) === 'NAI画图正则');
+            const replacement = String(regex?.replacement || '');
+            const match = replacement.match(/\bdata-artists\s*=\s*"([^"]*)"/i);
+            return match ? match[1].replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&') : '';
+        };
+
+        const buildGeneratedImageCacheKey = ({ messageId, directiveIndex, tags, artists }) => {
+            const charId = currentCharacter.value?.uuid || 'nochar';
+            const stableMessageId = messageId || hashTextForKey(tags);
+            const promptHash = hashTextForKey([
+                tags,
+                artists,
+                settings.imageGenModel || '',
+                settings.imageSize || '',
+                settings.imageStyle || ''
+            ].join('|'));
+            return [
+                GENERATED_IMAGE_CACHE_VERSION,
+                hashTextForKey(charId),
+                hashTextForKey(stableMessageId),
+                directiveIndex,
+                promptHash
+            ].join('_');
+        };
+
+        const createNaiPendingImageHtml = ({ cacheKey, messageId, directiveIndex, tags, artists }) => (
+            '<div class="nai-pending-image"'
+            + ` data-cache-key="${escapeHtmlAttribute(cacheKey)}"`
+            + ` data-message-id="${escapeHtmlAttribute(messageId)}"`
+            + ` data-directive-index="${escapeHtmlAttribute(directiveIndex)}"`
+            + ` data-tags="${escapeHtmlAttribute(tags)}"`
+            + ` data-artists="${escapeHtmlAttribute(artists)}"`
+            + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(200,200,200,0.15); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
+            + '<div style="color: #999; font-size: 13px; padding: 20px;">生成图片中...</div></div>'
+        );
+
+        const createNaiCachedImageHtml = (cacheKey) => (
+            '<div class="nai-cached-image"'
+            + ` data-cache-key="${escapeHtmlAttribute(cacheKey)}"`
+            + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
+            + '<div style="color: #999; font-size: 13px; padding: 20px;">加载图片缓存...</div></div>'
+        );
+
+        const replaceNativeNaiImageTokensForDisplay = (text, role, renderOptions = {}) => {
+            if (role !== 'assistant' || !text) return text;
+            const messageId = renderOptions.messageId || renderOptions.id || '';
+            const artists = getCurrentNaiImageArtists();
+            let directiveIndex = 0;
+            return String(text).replace(GENERATED_IMAGE_CACHE_TOKEN_REGEX, (full, cachedKey, tags) => {
+                const currentIndex = directiveIndex++;
+                if (cachedKey) return createNaiCachedImageHtml(cachedKey);
+                if (settings.imageGenProtocol !== 'novelai_native') return full;
+                const cacheKey = buildGeneratedImageCacheKey({
+                    messageId,
+                    directiveIndex: currentIndex,
+                    tags,
+                    artists
+                });
+                return createNaiPendingImageHtml({ cacheKey, messageId, directiveIndex: currentIndex, tags, artists });
+            });
+        };
+
+        const stripGeneratedImageCacheMarkersFromText = (text) => String(text || '')
+            .replace(/image-cache###[A-Za-z0-9_-]+###/g, '');
+
+        const markHistoricalNaiImageDirectives = (message) => {
+            if (!message || message.role !== 'assistant' || typeof message.content !== 'string' || !message.content.includes('image###')) return message;
+            const artists = getCurrentNaiImageArtists();
+            let directiveIndex = 0;
+            let changed = false;
+            message.content = message.content.replace(GENERATED_IMAGE_CACHE_TOKEN_REGEX, (full, cachedKey, tags) => {
+                const currentIndex = directiveIndex++;
+                if (cachedKey) return full;
+                changed = true;
+                const cacheKey = buildGeneratedImageCacheKey({
+                    messageId: message.id,
+                    directiveIndex: currentIndex,
+                    tags,
+                    artists
+                });
+                return `image-cache###${cacheKey}###`;
+            });
+            if (changed) message._imageDirectivesMigrated = true;
+            return message;
+        };
+
+        const setGeneratedImageCache = async (cacheKey, imageResult) => {
+            if (!cacheKey || !imageResult) return;
+            const record = {
+                createdAt: Date.now(),
+                url: imageResult.url || '',
+                mimeType: imageResult.blob?.type || 'image/png',
+                blob: imageResult.blob || null
+            };
+            await setStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`, record, { clone: false });
+        };
+
+        const getGeneratedImageCache = async (cacheKey) => {
+            if (!cacheKey) return null;
+            return getStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`);
+        };
+
+        const markNaiImageDirectiveGenerated = async (el) => {
+            const cacheKey = el?.getAttribute('data-cache-key') || '';
+            const messageId = el?.getAttribute('data-message-id') || '';
+            const directiveIndex = Number.parseInt(el?.getAttribute('data-directive-index') || '-1', 10);
+            if (!cacheKey || !messageId || !Number.isFinite(directiveIndex) || directiveIndex < 0) return;
+
+            const message = chatHistory.value.find(msg => msg && msg.id === messageId);
+            if (!message || typeof message.content !== 'string' || message.content.includes(`image-cache###${cacheKey}###`)) return;
+
+            let tokenIndex = 0;
+            let changed = false;
+            const nextContent = message.content.replace(GENERATED_IMAGE_CACHE_TOKEN_REGEX, (full, cachedKey) => {
+                const currentIndex = tokenIndex++;
+                if (currentIndex !== directiveIndex || cachedKey) return full;
+                changed = true;
+                return `image-cache###${cacheKey}###`;
+            });
+
+            if (!changed) return;
+            message.content = nextContent;
+            await saveChatHistoryNow();
+        };
+
         let chatHistorySaveTimer = null;
 
         const saveChatHistoryNow = async () => {
@@ -2250,7 +2415,12 @@ createApp({
 
                 // Save Chat State
                 if (currentCharacterIndex.value >= 0) {
-                    await setStoredValue('last_active_char', currentCharacterIndex.value);
+                    const activeRef = getCurrentActiveCharacterReference();
+                    if (activeRef) {
+                        await setStoredValue('last_active_char', activeRef.index);
+                        if (activeRef.uuid) await setStoredValue('last_active_char_uuid', activeRef.uuid);
+                        lastActiveCharacterId.value = activeRef.uuid || activeRef.index;
+                    }
                     await saveChatHistoryNow();
                 }
 
@@ -2301,6 +2471,7 @@ createApp({
 
         const pushServerSyncNow = async () => {
             if (!serverSync || !serverSync.isServerMode) return;
+            const activeRef = getCurrentActiveCharacterReference();
             const global = {
                 characters: characters.value,
                 settings: settings,
@@ -2315,7 +2486,8 @@ createApp({
                 user: user,
                 user_profiles: JSON.parse(JSON.stringify(userProfiles.value)),
                 active_profile_id: activeProfileId.value,
-                last_active_char: currentCharacterIndex.value,
+                last_active_char: activeRef ? activeRef.index : null,
+                last_active_char_uuid: activeRef?.uuid || (typeof lastActiveCharacterId.value === 'string' ? lastActiveCharacterId.value : null),
                 memory_settings: memorySettings,
             };
             const scoped = { chat: {}, memories: {} };
@@ -2445,7 +2617,7 @@ createApp({
                 const simpleKeys = ['settings', 'presets', 'regex', 'global_regex',
                     'worldinfo', 'global_worldinfo', 'worldinfo_settings',
                     'global_ui_templates', 'active_tools', 'user', 'user_profiles',
-                    'active_profile_id', 'last_active_char', 'memory_settings'];
+                    'active_profile_id', 'last_active_char', 'last_active_char_uuid', 'memory_settings'];
                 for (const key of simpleKeys) {
                     if (!(key in g)) continue;
                     const decision = decide(key);
@@ -2462,7 +2634,14 @@ createApp({
                             case 'worldinfo_settings': Object.assign(worldInfoSettings, g.worldinfo_settings); break;
                             case 'memory_settings': Object.assign(memorySettings, g.memory_settings); break;
                             case 'active_tools': _activeToolsOverride = g.active_tools; break;
-                            case 'last_active_char': /* don't override on pull */ break;
+                            case 'last_active_char':
+                                if (lastActiveCharacterId.value === null && g.last_active_char !== null && g.last_active_char !== undefined) {
+                                    lastActiveCharacterId.value = g.last_active_char;
+                                }
+                                break;
+                            case 'last_active_char_uuid':
+                                if (g.last_active_char_uuid) lastActiveCharacterId.value = g.last_active_char_uuid;
+                                break;
                             case 'presets': presets.value = g.presets; break;
                             case 'regex': regexScripts.value = g.regex; break;
                             case 'global_regex': globalRegexScripts.value = g.global_regex; break;
@@ -2683,9 +2862,12 @@ createApp({
                     activeProfileId.value = firstProfile.uuid;
                 }
 
-                // Load Last Active Character Index
+                // Load Last Active Character (UUID first, legacy index as fallback)
+                const lastCharUuid = await getStoredValue('last_active_char_uuid');
                 const lastCharIndex = await getStoredValue('last_active_char');
-                if (lastCharIndex !== undefined) {
+                if (lastCharUuid) {
+                    lastActiveCharacterId.value = lastCharUuid;
+                } else if (lastCharIndex !== undefined) {
                     lastActiveCharacterId.value = lastCharIndex;
                 }
 
@@ -4174,8 +4356,9 @@ ${content}
         // 辅助函数：当自动生图关闭时，只从发送给模型的上下文里移除可生图替换的内容
         const stripDisabledImageGenContext = (text) => {
             if (!text) return text;
-            if (isAutoImageGenEnabled.value) return text; // 生图开启时保留
-            return String(text)
+            const withoutCacheMarkers = stripGeneratedImageCacheMarkersFromText(text);
+            if (isAutoImageGenEnabled.value) return withoutCacheMarkers; // 生图开启时保留可生图指令，但不把缓存标记发给模型
+            return String(withoutCacheMarkers)
                 .replace(/<image\b[^>]*>[\s\S]*?<\/image>/gi, '')
                 .replace(/image###([\s\S]*?)###/gi, '')
                 .replace(/[ \t]+\n/g, '\n')
@@ -4185,7 +4368,7 @@ ${content}
         const processRegex = (text, options = {}) => {
             if (!text) return '';
             // options: { isDisplay, isPrompt, role, depth }
-            const { isDisplay = false, isPrompt = false, role = null, depth = 0 } = options;
+            const { isDisplay = false, isPrompt = false, role = null, depth = 0, skipNativeNaiImageGen = false } = options;
             if (role === 'system') return text;
 
             let result = text;
@@ -4196,6 +4379,7 @@ ${content}
             });
 
             orderedScripts.forEach(script => {
+                if (skipNativeNaiImageGen && settings.imageGenProtocol === 'novelai_native' && (script.name || script.scriptName) === 'NAI画图正则') return;
                 // 明确检查 enabled 字段：只有显式设置为 false 才跳过
                 if (script.enabled === false) return;
 
@@ -4484,9 +4668,10 @@ ${content}
             collapseNativeReasoning(chatHistory.value[chatHistory.value.length - 1]);
         };
 
-        const renderMarkdown = (text, role = 'assistant', skipRegex = false) => {
+        const renderMarkdown = (text, role = 'assistant', skipRegex = false, renderOptions = {}) => {
             if (!text) return '';
-            const cacheKey = `${role}_${skipRegex}_${text}`;
+            const messageCacheKey = renderOptions?.id || renderOptions?.messageId || '';
+            const cacheKey = `${role}_${skipRegex}_${messageCacheKey}_${text}`;
             if (renderMarkdownCache.has(cacheKey)) return renderMarkdownCache.get(cacheKey);
 
             let processed = text;
@@ -4495,7 +4680,14 @@ ${content}
             }
 
             // Apply regex for display (real-time)
-            processed = skipRegex ? processed : processRegex(processed, { isDisplay: true, role: role });
+            processed = skipRegex ? processed : processRegex(processed, {
+                isDisplay: true,
+                role: role,
+                skipNativeNaiImageGen: !!messageCacheKey
+            });
+            if (!skipRegex) {
+                processed = replaceNativeNaiImageTokensForDisplay(processed, role, renderOptions);
+            }
             const createIframe = (rawHtml) => createExecutableHtmlIframe(rawHtml, 'border-t border-gray-200 shadow-sm');
 
             // Configure DOMPurify
@@ -4884,6 +5076,7 @@ ${content}
                 role: 'user',
                 name: user.name,
                 content: finalContent,
+                id: generateUUID(),
                 shouldAnimate: true,
                 skipReveal: true,
                 isSelf: true,
@@ -4911,7 +5104,8 @@ ${content}
                     chatHistory.value.push({
                         role: 'assistant',
                         name: currentCharacter.value.name,
-                        content: currentCharacter.value.first_mes
+                        content: currentCharacter.value.first_mes,
+                        id: generateUUID()
                     });
                 }
                 memories.value = [];
@@ -6658,17 +6852,17 @@ ${content}
                             collapseNativeReasoning(lastMessage);
                         } else {
                             chatHistory.value.pop();
-                            chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: '生成已中止', skipReveal: true });
+                            chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: '生成已中止', id: generateUUID(), skipReveal: true });
                         }
                     } else {
-                        chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: '生成已中止', skipReveal: true });
+                        chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: '生成已中止', id: generateUUID(), skipReveal: true });
                     }
                 } else if (continuingAssistantMessage) {
                     const errorMessage = error.message || '生成失败';
                     appendAssistantResponseError(continuingAssistantMessage, errorMessage);
                     activeToolContinuationHasResponse.value = true;
                 } else {
-                    chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: error.message });
+                    chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: error.message, id: generateUUID() });
                 }
             } finally {
                 if (continuationToolCall && continuationToolCall.status === 'continuing') {
@@ -10297,6 +10491,39 @@ image###生成的提示词###
             throw new Error(`无法从生图响应中提取图片${detail ? `：${detail}` : ''}`);
         };
 
+        const renderNaiImageElement = (el, imageUrl) => {
+            el.innerHTML = `<img src="${imageUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
+            el.style.background = 'rgba(255,255,255,0.32)';
+            el.style.minHeight = '';
+            el.style.minWidth = '';
+        };
+
+        const processCachedNaiImages = async () => {
+            const placeholders = document.querySelectorAll('.nai-cached-image:not([data-loaded])');
+            if (!placeholders.length) return;
+            for (const el of placeholders) {
+                el.setAttribute('data-loaded', '1');
+                const cacheKey = el.getAttribute('data-cache-key') || '';
+                try {
+                    const cached = await getGeneratedImageCache(cacheKey);
+                    if (cached?.blob) {
+                        renderNaiImageElement(el, URL.createObjectURL(cached.blob));
+                        el.setAttribute('data-done', '1');
+                    } else if (cached?.url) {
+                        renderNaiImageElement(el, cached.url);
+                        el.setAttribute('data-done', '1');
+                    } else {
+                        el.innerHTML = GENERATED_IMAGE_CACHE_MISSING_HTML;
+                        el.setAttribute('data-missing-cache', '1');
+                    }
+                } catch (e) {
+                    console.warn('Failed to load cached NAI image:', e);
+                    el.innerHTML = GENERATED_IMAGE_CACHE_MISSING_HTML;
+                    el.setAttribute('data-missing-cache', '1');
+                }
+            }
+        };
+
         const processPendingNaiImages = async () => {
             if (settings.imageGenProtocol !== 'novelai_native') return;
             const placeholders = document.querySelectorAll('.nai-pending-image:not([data-loaded])');
@@ -10363,11 +10590,10 @@ image###生成的提示词###
                     }
                     const imageResult = await extractNaiImageResult(resp);
                     const imgUrl = imageResult.url || URL.createObjectURL(imageResult.blob);
-                    el.innerHTML = `<img src="${imgUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
-                    el.style.background = 'rgba(255,255,255,0.32)';
-                    el.style.minHeight = '';
-                    el.style.minWidth = '';
+                    await setGeneratedImageCache(el.getAttribute('data-cache-key') || '', imageResult);
+                    renderNaiImageElement(el, imgUrl);
                     el.setAttribute('data-done', '1'); // 标记为已完成，防止刷新后重复生图
+                    await markNaiImageDirectiveGenerated(el);
                 } catch (e) {
                     if (e?.isPendingImageResponse) {
                         const retryCount = Number.parseInt(el.getAttribute('data-retry-count') || '0', 10) || 0;
@@ -10394,9 +10620,11 @@ image###生成的提示词###
 
         // After messages render, process pending NAI images
         watch(displayedChatMessages, () => {
-            if (settings.imageGenProtocol !== 'novelai_native') return;
             nextTick(() => {
-                setTimeout(() => processPendingNaiImages(), 200);
+                setTimeout(() => {
+                    processCachedNaiImages();
+                    if (settings.imageGenProtocol === 'novelai_native') processPendingNaiImages();
+                }, 200);
             });
         });
 
@@ -10417,6 +10645,10 @@ image###生成的提示词###
         const prepareLoadedChatHistoryForDisplay = (messages = []) => sanitizeChatHistoryImageData(messages).messages
             .filter(msg => msg !== null && msg !== undefined)
             .map(msg => {
+                if (!msg.id && ['user', 'assistant', 'system'].includes(msg.role)) {
+                    msg.id = generateUUID();
+                }
+                markHistoricalNaiImageDirectives(msg);
                 if (msg.isSelf === undefined) {
                     msg.isSelf = msg.role === 'user';
                 }
@@ -10429,6 +10661,14 @@ image###生成的提示词###
                 }
                 return msg;
             });
+
+        const saveLoadedChatHistoryIfImageDirectivesMigrated = () => {
+            if (!chatHistory.value.some(msg => msg?._imageDirectivesMigrated)) return;
+            chatHistory.value.forEach(msg => {
+                if (msg) delete msg._imageDirectivesMigrated;
+            });
+            saveChatHistoryNow();
+        };
 
         const selectCharacter = async (index, isNewImport = false) => {
             if (isConversationBusy.value) {
@@ -10467,13 +10707,15 @@ image###生成的提示词###
                 const savedChat = await getScopedStoredValue('chat', char.uuid);
                 if (savedChat && savedChat.length > 0) {
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
+                    saveLoadedChatHistoryIfImageDirectivesMigrated();
                 } else {
                     chatHistory.value = [];
                     if (char.first_mes) {
                         chatHistory.value.push({
                             role: 'assistant',
                             name: char.name,
-                            content: char.first_mes
+                            content: char.first_mes,
+                            id: generateUUID()
                         });
                     }
                 }
@@ -11123,7 +11365,7 @@ image###生成的提示词###
             const startTime = Date.now(); // Record trigger time
 
             // Add user message with explicit reactivity update
-            const newMessage = { role: 'user', content: text, isSelf: true, isTriggered: true, shouldAnimate: true, skipReveal: true };
+            const newMessage = { role: 'user', content: text, id: generateUUID(), isSelf: true, isTriggered: true, shouldAnimate: true, skipReveal: true };
             // Push and force update to ensure v-if picks up the new property
             chatHistory.value = [...chatHistory.value, newMessage];
 
@@ -11674,10 +11916,12 @@ image###生成的提示词###
             _initComplete = true;
 
             // Restore Last Active Session
-            if (lastActiveCharacterId.value !== null && characters.value[lastActiveCharacterId.value]) {
+            const restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterId.value);
+            if (restoredCharacterIndex >= 0) {
                 // Restore character selection without clearing chat history (we load it from DB)
                 _isApplyingCharacterScopedData = true;
-                currentCharacterIndex.value = lastActiveCharacterId.value;
+                currentCharacterIndex.value = restoredCharacterIndex;
+                currentView.value = 'chat';
                 resetChatRenderWindow();
                 const char = characters.value[currentCharacterIndex.value];
                 char.uiTemplates = Array.isArray(char.uiTemplates) ? char.uiTemplates.map(template => normalizeUiTemplate({ ...template, scope: 'character' })) : [];
@@ -11687,6 +11931,9 @@ image###生成的提示词###
                     char.uuid = generateUUID();
                     saveData();
                 }
+                lastActiveCharacterId.value = char.uuid || currentCharacterIndex.value;
+                await setStoredValue('last_active_char', currentCharacterIndex.value);
+                if (char.uuid) await setStoredValue('last_active_char_uuid', char.uuid);
                 loadGlobalUiTemplateRuntimeForCharacter(char);
 
                 // Load Chat History for this character
@@ -11699,11 +11946,13 @@ image###生成的提示词###
 
                     if (savedChat && Array.isArray(savedChat) && savedChat.length > 0) {
                         chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
+                        saveLoadedChatHistoryIfImageDirectivesMigrated();
                     } else if (char.first_mes) {
                         chatHistory.value = [{
                             role: 'assistant',
                             name: char.name,
-                            content: char.first_mes
+                            content: char.first_mes,
+                            id: generateUUID()
                         }];
                     } else {
                         chatHistory.value = [];
@@ -11781,7 +12030,7 @@ image###生成的提示词###
                 await scrollChatToBottom();
             } else if (characters.value.length > 0) {
                 // Fallback to first character if no last active
-                selectCharacter(0);
+                await selectCharacter(0);
             }
 
             if (settings.autoFetchModels) {
