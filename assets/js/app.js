@@ -2288,11 +2288,20 @@ createApp({
                 memory_settings: memorySettings,
             };
             const scoped = { chat: {}, memories: {} };
+            const MAX_SCOPED_SIZE = 8 * 1024 * 1024; // 8MB per scoped entry
             for (const char of characters.value) {
                 if (!char.uuid) continue;
                 try {
                     const chat = await getScopedStoredValue('chat', char.uuid);
-                    if (chat !== undefined) scoped.chat[char.uuid] = chat;
+                    if (chat !== undefined) {
+                        const chatStr = JSON.stringify(chat);
+                        if (chatStr.length <= MAX_SCOPED_SIZE) {
+                            scoped.chat[char.uuid] = chat;
+                        } else {
+                            // 聊天记录太大（含 base64 图片），跳过同步，只存本地
+                            console.warn('[ServerSync] chat history for', char.uuid, 'too large (' + Math.round(chatStr.length/1024/1024) + 'MB), skipping sync');
+                        }
+                    }
                 } catch (_) {}
                 try {
                     const mem = await getScopedStoredValue('memories', char.uuid);
