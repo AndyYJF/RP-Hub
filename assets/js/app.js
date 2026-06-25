@@ -10309,11 +10309,38 @@ image###生成的提示词###
                         throw new Error(`HTTP ${resp.status}${detail ? `: ${detail.slice(0, 180)}` : ''}`);
                     }
                     const imageResult = await extractNaiImageResult(resp);
-                    const url = imageResult.url || URL.createObjectURL(imageResult.blob);
-                    el.innerHTML = `<img src="${url}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
+                    const imgUrl = imageResult.url || URL.createObjectURL(imageResult.blob);
+                    el.innerHTML = `<img src="${imgUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
                     el.style.background = 'rgba(255,255,255,0.32)';
                     el.style.minHeight = '';
                     el.style.minWidth = '';
+                    el.setAttribute('data-done', '1'); // 标记为已完成，防止刷新后重复生图
+                    // 持久化：把 base64 图片写回聊天记录，替换占位符，刷新后直接显示
+                    try {
+                        const blobToDataUrl = async (blob) => {
+                            return new Promise((resolve, reject) => {
+                                const r = new FileReader();
+                                r.onload = () => resolve(r.result);
+                                r.onerror = reject;
+                                r.readAsDataURL(blob);
+                            });
+                        };
+                        if (imageResult.blob) {
+                            const dataUrl = await blobToDataUrl(imageResult.blob);
+                            const tags = el.getAttribute('data-tags') || '';
+                            // 在当前消息内容中把 image###tags### 替换为 base64 图片 markdown
+                            const imgMarkdown = `![生成图片](${dataUrl})`;
+                            for (const msg of chatHistory.value) {
+                                if (msg && msg.content && msg.content.includes(`image###${tags}###`)) {
+                                    msg.content = msg.content.replace(`image###${tags}###`, imgMarkdown);
+                                    break;
+                                }
+                            }
+                            scheduleChatHistorySave();
+                        }
+                    } catch (persistErr) {
+                        console.warn('[NAI] persist image to chat history failed:', persistErr);
+                    }
                 } catch (e) {
                     if (e?.isPendingImageResponse) {
                         const retryCount = Number.parseInt(el.getAttribute('data-retry-count') || '0', 10) || 0;
