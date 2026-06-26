@@ -180,6 +180,7 @@ tr:hover td{background:#fafbfc}
                                 <button class="btn btn-primary btn-sm" @click="reviewCard(c,'approved','')" v-if="c.status!=='approved'">通过</button>
                                 <button class="btn btn-danger btn-sm" @click="reviewCardWithNote(c,'rejected')">拒绝</button>
                                 <button class="btn btn-ghost btn-sm" @click="reviewCard(c,'offline','')" v-if="c.status==='approved'">下架</button>
+                                <button class="btn btn-danger btn-sm" @click="deleteCard(c)" v-if="c.status==='offline'">删除</button>
                             </td>
                         </tr>
                         <tr v-if="!lib.list.length"><td colspan="7" class="text-center text-gray-400 py-6">暂无数据</td></tr>
@@ -345,6 +346,7 @@ tr:hover td{background:#fafbfc}
                 <button class="btn btn-ghost" @click="cardPreview.open=false">关闭</button>
                 <button class="btn btn-primary" v-if="cardPreview.card && cardPreview.card.status!=='approved'" @click="reviewCard(cardPreview.card,'approved','')">通过上架</button>
                 <button class="btn btn-danger" v-if="cardPreview.card && cardPreview.card.status!=='rejected'" @click="reviewCardWithNote(cardPreview.card,'rejected')">拒绝</button>
+                <button class="btn btn-danger" v-if="cardPreview.card && cardPreview.card.status==='offline'" @click="deleteCard(cardPreview.card)">删除</button>
             </div>
         </div>
     </div>
@@ -497,6 +499,15 @@ createApp({
             try { await sync.adminLibraryReview(c.id, status, note); toast('已审核', 'success'); cardPreview.open = false; loadLibrary(lib.page); }
             catch (e) { toast(e.message, 'error'); }
         }
+        async function deleteCard(c) {
+            if (!c || !confirm(`确认删除角色卡 "${c.name || c.uuid || c.id}"？该操作不可撤销。`)) return;
+            try {
+                await sync.adminLibraryDelete(c.id);
+                toast('已删除', 'success');
+                cardPreview.open = false;
+                loadLibrary(lib.page);
+            } catch (e) { toast(e.message, 'error'); }
+        }
         const rejectEditor = reactive({ open: false, card: null, note: '' });
         function reviewCardWithNote(c, status = 'rejected') {
             rejectEditor.card = c; rejectEditor.note = ''; rejectEditor.open = true;
@@ -596,7 +607,7 @@ createApp({
             sync, view, toasts, setView, goApp, goLogin, doLogout,
             stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
-            lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, rejectEditor, confirmReject,
+            lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
             usageSummary, usageRange, loadUsageSummary,
             audit, auditFilter, loadAudit,

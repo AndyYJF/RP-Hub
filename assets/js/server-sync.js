@@ -489,6 +489,7 @@
             return this._request('/api/library/admin/review/' + id, { method: 'POST', body: JSON.stringify({ status, note }) });
         }
         adminLibraryPreview(id) { return this._request('/api/library/admin/card/' + id); }
+        adminLibraryDelete(id) { return this._request('/api/library/admin/card/' + id, { method: 'DELETE' }); }
         adminApiUsage(params = {}) {
             const qs = new URLSearchParams();
             for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v);

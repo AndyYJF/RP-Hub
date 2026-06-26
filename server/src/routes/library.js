@@ -203,6 +203,18 @@ router.get('/admin/card/:id', adminRequired, (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- Admin: delete a card ----------
+router.delete('/admin/card/:id', adminRequired, (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const c = db.prepare('SELECT * FROM library_cards WHERE id = ?').get(id);
+    if (!c) return res.status(404).json({ error: '角色卡不存在' });
+    db.prepare('DELETE FROM library_cards WHERE id = ?').run(id);
+    audit(req.user.id, 'library_admin_delete', c.uuid, c.name || '', req.ip);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // ---------- Admin: list all cards (any status) ----------
 router.get('/admin/list', adminRequired, (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
