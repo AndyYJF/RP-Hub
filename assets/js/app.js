@@ -491,6 +491,8 @@ createApp({
         const characterSearchQuery = ref('');
         const availableModels = ref([]);
         const toasts = ref([]);
+        const isInitialServerSyncing = ref(false);
+        const initialServerSyncText = ref('正在同步云端数据，请稍候...');
         let toastIdSeed = 0;
         const chatContainer = ref(null);
         const isChatFullscreen = ref(false);
@@ -2580,6 +2582,7 @@ createApp({
         const scheduleServerSyncPush = () => {
             if (!serverSync || !serverSync.isServerMode) return;
             if (_serverSyncSuppressPush) return;
+            if (!_serverSyncInitialPulled) return;
             if (_serverSyncTimer) clearTimeout(_serverSyncTimer);
             _serverSyncTimer = setTimeout(() => {
                 _serverSyncTimer = null;
@@ -2589,6 +2592,10 @@ createApp({
 
         const pushServerSyncNow = async () => {
             if (!serverSync || !serverSync.isServerMode) return;
+            if (!_serverSyncInitialPulled) {
+                console.warn('[ServerSync] push skipped before initial pull');
+                return;
+            }
             const activeRef = getCurrentActiveCharacterReference();
             const global = {
                 characters: characters.value,
@@ -2692,6 +2699,10 @@ createApp({
 
         const pullServerSyncNow = async () => {
             if (!serverSync || !serverSync.isServerMode || _serverSyncPulling) return;
+            if (_serverSyncTimer) {
+                clearTimeout(_serverSyncTimer);
+                _serverSyncTimer = null;
+            }
             _serverSyncPulling = true;
             _serverSyncSuppressPush = true;
             let hasLocalNewer = false; // track if local has data newer than server
@@ -2805,6 +2816,10 @@ createApp({
                     if (sTs >= lTs) newMeta[metaKey] = sTs;
                 }
                 await setSyncMeta(newMeta);
+
+                if (_initComplete) {
+                    await restoreLastActiveCharacterSelection({ fallbackToFirst: false, silent: true });
+                }
 
                 // Trigger one local save to persist merged global state
                 if (_initComplete) saveData({ saveMemories: false });
@@ -10897,7 +10912,8 @@ image###生成的提示词###
                 return msg;
             });
 
-        const selectCharacter = async (index, isNewImport = false) => {
+        const selectCharacter = async (index, isNewImport = false, options = {}) => {
+            const { silent = false, save = true } = options;
             if (isConversationBusy.value) {
                 stopGeneration();
                 const stopped = await waitForConversationIdle();
@@ -10931,7 +10947,10 @@ image###生成的提示词###
 
             // Try to load saved chat history for this character
             try {
-                const savedChat = await getScopedStoredValue('chat', char.uuid);
+                let savedChat = char.uuid ? await getScopedStoredValue('chat', char.uuid) : null;
+                if (!savedChat) {
+                    savedChat = await getScopedStoredValue('chat', index);
+                }
                 if (savedChat && savedChat.length > 0) {
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
                 } else {
@@ -11024,14 +11043,27 @@ image###生成的提示词###
 
             currentView.value = 'chat';
             await scrollChatToBottom();
-            showToast(`已切换到角色: ${char.name}`, 'success');
+            if (!silent) showToast(`已切换到角色: ${char.name}`, 'success');
 
             // 弹出自动生图询问 (仅在导入新卡时)
             if (isNewImport) {
                 showAutoImageGenModal.value = true;
             }
 
-            saveData(); // Save the switch immediately
+            if (save) saveData(); // Save the switch immediately
+        };
+
+        const restoreLastActiveCharacterSelection = async ({ fallbackToFirst = false, silent = true } = {}) => {
+            let restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterId.value);
+            if (restoredCharacterIndex < 0) {
+                restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterIndexFallback.value);
+            }
+            if (restoredCharacterIndex < 0 && fallbackToFirst && characters.value.length > 0) {
+                restoredCharacterIndex = 0;
+            }
+            if (restoredCharacterIndex < 0) return false;
+            await selectCharacter(restoredCharacterIndex, false, { silent, save: true });
+            return true;
         };
 
         const handleAvatarUpload = (event) => {
@@ -11611,12 +11643,16 @@ image###生成的提示词###
             // If logged in & server mode enabled, pull server data AFTER loadData (so DB is initialized)
             // and merge server data over local. Pull disables push to avoid feedback loop.
             if (serverSync && serverSync.isServerMode) {
+                isInitialServerSyncing.value = true;
+                initialServerSyncText.value = '正在同步云端角色卡和聊天记录，请稍候...';
                 try {
                     await pullServerSyncNow();
                     showToast('云端数据同步成功', 'success');
                 } catch (e) {
                     console.warn('[ServerSync] initial pull failed:', e?.message || e);
                     showToast('云端数据同步失败，使用本地数据', 'error');
+                } finally {
+                    isInitialServerSyncing.value = false;
                 }
             }
 
@@ -12141,126 +12177,7 @@ image###生成的提示词###
             // 初始化守卫解除：此后 saveData 才允许写入 user / memorySettings
             _initComplete = true;
 
-            // Restore Last Active Session
-            let restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterId.value);
-            if (restoredCharacterIndex < 0) {
-                restoredCharacterIndex = getCharacterIndexByPersistentId(lastActiveCharacterIndexFallback.value);
-            }
-            if (restoredCharacterIndex >= 0) {
-                // Restore character selection without clearing chat history (we load it from DB)
-                _isApplyingCharacterScopedData = true;
-                currentCharacterIndex.value = restoredCharacterIndex;
-                currentView.value = 'chat';
-                resetChatRenderWindow();
-                const char = characters.value[currentCharacterIndex.value];
-                char.uiTemplates = Array.isArray(char.uiTemplates) ? char.uiTemplates.map(template => normalizeUiTemplate({ ...template, scope: 'character' })) : [];
-
-                // Ensure UUID
-                if (!char.uuid) {
-                    char.uuid = generateUUID();
-                    saveData();
-                }
-                lastActiveCharacterId.value = char.uuid || currentCharacterIndex.value;
-                lastActiveCharacterIndexFallback.value = currentCharacterIndex.value;
-                await setStoredValue('last_active_char', currentCharacterIndex.value);
-                if (char.uuid) await setStoredValue('last_active_char_uuid', char.uuid);
-                loadGlobalUiTemplateRuntimeForCharacter(char);
-
-                // Load Chat History for this character
-                try {
-                    // Try UUID first, fallback to index if migration failed or partial
-                    let savedChat = await getScopedStoredValue('chat', char.uuid);
-                    if (!savedChat) {
-                        savedChat = await getScopedStoredValue('chat', currentCharacterIndex.value);
-                    }
-
-                    if (savedChat && Array.isArray(savedChat) && savedChat.length > 0) {
-                        chatHistory.value = prepareLoadedChatHistoryForDisplay(savedChat);
-                    } else if (char.first_mes) {
-                        chatHistory.value = [{
-                            role: 'assistant',
-                            name: char.name,
-                            content: char.first_mes,
-                            id: generateUUID()
-                        }];
-                    } else {
-                        chatHistory.value = [];
-                    }
-                } catch (e) {
-                    console.error('Error loading chat history on restore:', e);
-                    chatHistory.value = [];
-                }
-
-                // Load Char Specifics
-                const characterWorldInfo = Array.isArray(char.worldInfo)
-                    ? JSON.parse(JSON.stringify(char.worldInfo)).map(entry => normalizeWorldInfoEntry({ ...entry, scope: 'character' })).filter(entry => entry.scope !== 'global')
-                    : [];
-                worldInfo.value = [
-                    ...JSON.parse(JSON.stringify(globalWorldInfo.value)).map(entry => normalizeWorldInfoEntry({ ...entry, scope: 'global' })),
-                    ...characterWorldInfo
-                ];
-
-                combineRegexScriptsForCharacter(char);
-                finishApplyingCharacterScopedData();
-
-                if (char.recentGenerationTimes) recentGenerationTimes.value = JSON.parse(JSON.stringify(char.recentGenerationTimes));
-                else recentGenerationTimes.value = [];
-
-                // Load Character Memories on restore
-                try {
-                    const savedMemories = await getScopedStoredValue('memories', char.uuid);
-                    if (savedMemories && savedMemories.length > 0) {
-                        memories.value = prepareMemoriesForRuntime(savedMemories);
-                    } else {
-                        memories.value = [];
-                    }
-                } catch (e) {
-                    console.error('Error loading memories on restore:', e);
-                    memories.value = [];
-                }
-                _memoriesLoaded = true;
-
-                // Ensure default regex
-                const defaultRegexName = 'Auto Replace {{user}}';
-                const hasDefaultRegex = regexScripts.value.some(r => r.name === defaultRegexName);
-                if (!hasDefaultRegex) {
-                    regexScripts.value.push({
-                        name: defaultRegexName,
-                        regex: '{{user}}',
-                        flags: 'gi',
-                        replacement: user.name,
-                        placement: [1, 2],
-                        markdownOnly: false,
-                        promptOnly: false,
-                        scope: 'global',
-                        enabled: true
-                    });
-                } else {
-                    const script = regexScripts.value.find(r => r.name === defaultRegexName);
-                    if (script) {
-                    script.replacement = user.name;
-                    script.enabled = true;
-                    script.scope = 'global';
-                    if (!script.placement) script.placement = [1, 2];
-                }
-                }
-
-
-
-                // Enforce special rules (Nai画图正则 & 自动生图)
-                enforceSpecialRules();
-
-                // Sync image style rules
-                if (isAutoImageGenEnabled.value) {
-                    updateImageGenRegexState({ enableRegex: true });
-                }
-
-                // showToast(`欢迎回来，${user.name}`, 'success'); // Removed per user request
-                await scrollChatToBottom();
-            } else if (characters.value.length > 0) {
-                // Fallback to first character if no last active
-                await selectCharacter(0);
-            }
+            await restoreLastActiveCharacterSelection({ fallbackToFirst: true, silent: true });
 
             if (settings.autoFetchModels) {
                 fetchModels();
@@ -12385,6 +12302,7 @@ image###生成的提示词###
             showAnnouncementModal, siteAnnouncement, dontShowAnnouncementAgain, closeAnnouncementModal, formatAnnouncementTime, // 站点公告
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, activeToolInlineStatusText, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationToolCallId, activeToolContinuationHasResponse, activeNativeReasoning, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, availableModels, filteredModels, filteredCharacters,
+            isInitialServerSyncing, initialServerSyncText,
             user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOption, customApiProviderOptions, showApiProviderSelector, selectApiProvider, imageGenProviderOptions, customImageGenProviderOptions, selectedImageGenProvider, isCustomImageGenProvider, showImageGenProviderSelector, selectImageGenProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, getActiveToolAggressivenessLabel, editingActiveTool, normalizeActiveTools, isWebActiveTool, isWorldInfoActiveTool, getWorldInfoAccessMode, getActiveToolDisplayDescription, canConfigureActiveToolResultCount, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,

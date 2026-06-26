@@ -144,6 +144,20 @@
         </div>
 
 
+        <transition enter-active-class="transition-opacity duration-200 ease-modal-fade" enter-from-class="opacity-0"
+            enter-to-class="opacity-100" leave-active-class="transition-opacity duration-200 ease-modal-fade"
+            leave-from-class="opacity-100" leave-to-class="opacity-0">
+            <div v-if="isInitialServerSyncing"
+                class="fixed inset-0 z-[120] flex items-center justify-center bg-white/70 backdrop-blur-sm px-4">
+                <div class="w-full max-w-[360px] rounded-2xl border border-gray-200 bg-white/95 px-6 py-5 shadow-xl text-center">
+                    <div class="mx-auto mb-4 h-9 w-9 rounded-full border-2 border-primary-200 border-t-primary-600 animate-spin"></div>
+                    <div class="text-sm font-semibold text-gray-800">{{ initialServerSyncText }}</div>
+                    <div class="mt-2 text-xs text-gray-500">首次登录新设备时可能需要几秒钟。</div>
+                </div>
+            </div>
+        </transition>
+
+
         <!-- Mobile Sidebar Overlay -->
         <div @click="closeMobileMenu"
             class="fixed inset-0 bg-black/30 backdrop-blur-sm z-40 md:hidden mobile-overlay">
