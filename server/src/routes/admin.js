@@ -287,21 +287,125 @@ router.get('/api-usage', (req, res) => {
 router.get('/api-usage/summary', (req, res) => {
   const range = (req.query.range || '7d').toString();
   const spans = { '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 };
-  const since = now() - (spans[range] || spans['7d']);
+  const span = spans[range] || spans['7d'];
+  const end = now();
+  const since = end - span;
+  const bucketMs = range === '24h' ? 3600e3 : 86400e3;
+  const bucketStart = Math.floor(since / bucketMs) * bucketMs;
+  const bucketCount = Math.floor((end - bucketStart) / bucketMs) + 1;
+  const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+    index,
+    start: bucketStart + index * bucketMs,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    requests: 0,
+  }));
   const totals = db.prepare(
     `SELECT COALESCE(SUM(prompt_tokens),0) as p, COALESCE(SUM(completion_tokens),0) as c,
-            COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n
+            COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n,
+            COUNT(DISTINCT user_id) as users, COUNT(DISTINCT NULLIF(model, '')) as models
      FROM api_usage WHERE created_at >= ?`
   ).get(since);
+  const seriesRows = db.prepare(
+    `SELECT CAST((created_at - ?) / ? AS INTEGER) as bucket,
+            COALESCE(SUM(prompt_tokens),0) as p, COALESCE(SUM(completion_tokens),0) as c,
+            COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n
+     FROM api_usage
+     WHERE created_at >= ?
+     GROUP BY bucket
+     ORDER BY bucket ASC`
+  ).all(bucketStart, bucketMs, since);
+  for (const row of seriesRows) {
+    const target = buckets[row.bucket];
+    if (!target) continue;
+    target.promptTokens = row.p;
+    target.completionTokens = row.c;
+    target.totalTokens = row.t;
+    target.requests = row.n;
+  }
   const byUser = db.prepare(
-    `SELECT u.user_id, us.username, COALESCE(SUM(u.total_tokens),0) as total, COUNT(*) as count
+    `SELECT u.user_id, us.username,
+            COALESCE(SUM(u.prompt_tokens),0) as prompt,
+            COALESCE(SUM(u.completion_tokens),0) as completion,
+            COALESCE(SUM(u.total_tokens),0) as total,
+            COUNT(*) as count
      FROM api_usage u LEFT JOIN users us ON us.id = u.user_id
      WHERE u.created_at >= ? GROUP BY u.user_id ORDER BY total DESC LIMIT 20`
   ).all(since);
+  const byModel = db.prepare(
+    `SELECT COALESCE(NULLIF(model, ''), 'unknown') as model,
+            COALESCE(SUM(prompt_tokens),0) as prompt,
+            COALESCE(SUM(completion_tokens),0) as completion,
+            COALESCE(SUM(total_tokens),0) as total,
+            COUNT(*) as count
+     FROM api_usage
+     WHERE created_at >= ?
+     GROUP BY COALESCE(NULLIF(model, ''), 'unknown')
+     ORDER BY total DESC LIMIT 12`
+  ).all(since);
+  const byEndpoint = db.prepare(
+    `SELECT COALESCE(NULLIF(endpoint, ''), 'unknown') as endpoint,
+            COALESCE(SUM(total_tokens),0) as total,
+            COUNT(*) as count
+     FROM api_usage
+     WHERE created_at >= ?
+     GROUP BY COALESCE(NULLIF(endpoint, ''), 'unknown')
+     ORDER BY total DESC LIMIT 8`
+  ).all(since);
+  const recent = db.prepare(
+    `SELECT u.*, us.username FROM api_usage u LEFT JOIN users us ON us.id = u.user_id
+     WHERE u.created_at >= ?
+     ORDER BY u.created_at DESC LIMIT 12`
+  ).all(since);
   res.json({
     range,
-    totals: { promptTokens: totals.p, completionTokens: totals.c, totalTokens: totals.t, requests: totals.n },
-    byUser: byUser.map(r => ({ userId: r.user_id, username: r.username, totalTokens: r.total, requests: r.count })),
+    bucketMs,
+    since,
+    end,
+    totals: {
+      promptTokens: totals.p,
+      completionTokens: totals.c,
+      totalTokens: totals.t,
+      requests: totals.n,
+      activeUsers: totals.users,
+      activeModels: totals.models,
+      avgTokens: totals.n ? Math.round(totals.t / totals.n) : 0,
+    },
+    series: buckets.map(b => ({
+      start: b.start,
+      promptTokens: b.promptTokens,
+      completionTokens: b.completionTokens,
+      totalTokens: b.totalTokens,
+      requests: b.requests,
+    })),
+    byUser: byUser.map(r => ({
+      userId: r.user_id,
+      username: r.username,
+      promptTokens: r.prompt,
+      completionTokens: r.completion,
+      totalTokens: r.total,
+      requests: r.count,
+    })),
+    byModel: byModel.map(r => ({
+      model: r.model,
+      promptTokens: r.prompt,
+      completionTokens: r.completion,
+      totalTokens: r.total,
+      requests: r.count,
+    })),
+    byEndpoint: byEndpoint.map(r => ({ endpoint: r.endpoint, totalTokens: r.total, requests: r.count })),
+    recent: recent.map(r => ({
+      id: r.id,
+      userId: r.user_id,
+      username: r.username,
+      endpoint: r.endpoint,
+      model: r.model,
+      promptTokens: r.prompt_tokens,
+      completionTokens: r.completion_tokens,
+      totalTokens: r.total_tokens,
+      createdAt: r.created_at,
+    })),
   });
 });
 

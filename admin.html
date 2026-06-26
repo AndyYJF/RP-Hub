@@ -42,6 +42,23 @@ tr:hover td{background:#fafbfc}
 .stat-card{padding:1.2rem;border-radius:.75rem;background:#fff;border:1px solid #e5e7eb}
 .stat-num{font-size:1.75rem;font-weight:700;color:#111827}
 .stat-label{font-size:.75rem;color:#6b7280;margin-top:.2rem}
+.metric-card{position:relative;overflow:hidden}
+.metric-card:after{content:"";position:absolute;inset:auto 0 0 0;height:3px;background:linear-gradient(90deg,#2563eb,#22c55e);opacity:.85}
+.metric-kicker{font-size:.7rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em}
+.metric-sub{font-size:.72rem;color:#9ca3af;margin-top:.35rem}
+.dash-card{background:#fff;border:1px solid #e5e7eb;border-radius:.75rem;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.dash-card-title{font-size:.9rem;font-weight:700;color:#374151}
+.chart-wrap{height:260px}
+.chart-grid{stroke:#e5e7eb;stroke-width:1}
+.chart-line-tokens{fill:none;stroke:#2563eb;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.chart-line-requests{fill:none;stroke:#22c55e;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.chart-area{fill:#dbeafe;opacity:.55}
+.legend-dot{width:.55rem;height:.55rem;border-radius:999px;display:inline-block}
+.rank-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;align-items:center}
+.rank-bar{height:.45rem;border-radius:999px;background:#e5e7eb;overflow:hidden}
+.rank-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#2563eb,#60a5fa)}
+.rank-bar.green span{background:linear-gradient(90deg,#16a34a,#86efac)}
+.mono{font-variant-numeric:tabular-nums}
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
 .modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:640px;width:92%;max-height:85vh;overflow:auto}
 </style>
@@ -225,20 +242,156 @@ tr:hover td{background:#fafbfc}
 
         <!-- API 用量 -->
         <section v-if="view==='apiusage'">
-            <h2 class="text-xl font-bold mb-4">API 用量 <select class="input ml-2 inline-block w-auto text-sm" v-model="usageRange" @change="loadUsageSummary">
-                <option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option>
-            </select></h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" v-if="usageSummary">
-                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.requests }}</div><div class="stat-label">请求次数</div></div>
-                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.totalTokens }}</div><div class="stat-label">总 Tokens</div></div>
-                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.promptTokens }}</div><div class="stat-label">输入 Tokens</div></div>
-                <div class="stat-card"><div class="stat-num">{{ usageSummary.totals.completionTokens }}</div><div class="stat-label">输出 Tokens</div></div>
+            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold">API 用量仪表盘</h2>
+                    <p class="text-xs text-gray-500 mt-1">请求、Token、模型和用户分布概览</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <select class="input w-36 text-sm" v-model="usageRange" @change="loadUsageSummary">
+                        <option value="24h">近 24 小时</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" @click="loadUsageSummary">刷新</button>
+                </div>
             </div>
-            <div class="card p-4" v-if="usageSummary && usageSummary.byUser.length">
-                <h3 class="text-sm font-semibold mb-3 text-gray-700">用户用量 Top 20</h3>
-                <table><thead><tr><th>用户</th><th>请求</th><th>Tokens</th></tr></thead>
-                <tbody><tr v-for="u in usageSummary.byUser" :key="u.userId"><td>{{ u.username || '#'+u.userId }}</td><td>{{ u.requests }}</td><td>{{ u.totalTokens }}</td></tr></tbody></table>
+
+            <div v-if="usageSummary" class="space-y-4">
+                <div class="grid grid-cols-2 xl:grid-cols-6 gap-3">
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Requests</div>
+                        <div class="stat-num mono">{{ formatNumber(usageTotals.requests) }}</div>
+                        <div class="metric-sub">平均 {{ formatNumber(usageTotals.avgTokens) }} tokens / 次</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Total Tokens</div>
+                        <div class="stat-num mono">{{ compactNumber(usageTotals.totalTokens) }}</div>
+                        <div class="metric-sub">完整消耗量</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Prompt</div>
+                        <div class="stat-num mono">{{ compactNumber(usageTotals.promptTokens) }}</div>
+                        <div class="metric-sub">{{ usageTokenPart('prompt') }}% 输入占比</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Completion</div>
+                        <div class="stat-num mono">{{ compactNumber(usageTotals.completionTokens) }}</div>
+                        <div class="metric-sub">{{ usageTokenPart('completion') }}% 输出占比</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Active Users</div>
+                        <div class="stat-num mono">{{ formatNumber(usageTotals.activeUsers) }}</div>
+                        <div class="metric-sub">当前周期活跃</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Models</div>
+                        <div class="stat-num mono">{{ formatNumber(usageTotals.activeModels) }}</div>
+                        <div class="metric-sub">被调用模型数</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                    <div class="dash-card p-4 xl:col-span-2">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <div class="dash-card-title">用量趋势</div>
+                                <div class="text-xs text-gray-500 mt-1">{{ usageRangeLabel }} · Tokens 与请求次数</div>
+                            </div>
+                            <div class="flex items-center gap-3 text-xs text-gray-500">
+                                <span class="inline-flex items-center gap-1"><i class="legend-dot bg-primary-600"></i>Tokens</span>
+                                <span class="inline-flex items-center gap-1"><i class="legend-dot bg-green-500"></i>请求</span>
+                            </div>
+                        </div>
+                        <div class="chart-wrap">
+                            <svg viewBox="0 0 640 240" class="w-full h-full" preserveAspectRatio="none" role="img">
+                                <line v-for="y in [44,86,128,170,212]" :key="'grid-'+y" x1="24" :y1="y" x2="620" :y2="y" class="chart-grid"></line>
+                                <polygon v-if="usageTokenAreaPoints" :points="usageTokenAreaPoints" class="chart-area"></polygon>
+                                <polyline v-if="usageTokenTrendPoints" :points="usageTokenTrendPoints" class="chart-line-tokens"></polyline>
+                                <polyline v-if="usageRequestTrendPoints" :points="usageRequestTrendPoints" class="chart-line-requests"></polyline>
+                            </svg>
+                        </div>
+                        <div class="flex justify-between text-[11px] text-gray-400 mt-2">
+                            <span v-for="tick in usageChartTicks" :key="tick.start">{{ formatUsageBucket(tick.start) }}</span>
+                        </div>
+                    </div>
+
+                    <div class="dash-card p-4">
+                        <div class="dash-card-title mb-3">接口来源</div>
+                        <div v-if="usageSummary.byEndpoint && usageSummary.byEndpoint.length" class="space-y-4">
+                            <div v-for="e in usageSummary.byEndpoint" :key="e.endpoint" class="space-y-1.5">
+                                <div class="rank-row">
+                                    <div class="truncate text-sm text-gray-700" :title="e.endpoint">{{ formatEndpoint(e.endpoint) }}</div>
+                                    <div class="text-xs text-gray-500 mono">{{ compactNumber(e.totalTokens) }}</div>
+                                </div>
+                                <div class="rank-bar green"><span :style="{width: usageEndpointShare(e) + '%'}"></span></div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-10 text-center">暂无接口数据</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div class="dash-card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="dash-card-title">模型用量</div>
+                            <div class="text-xs text-gray-400">按 Token 排序</div>
+                        </div>
+                        <div v-if="usageSummary.byModel && usageSummary.byModel.length" class="space-y-4">
+                            <div v-for="m in usageSummary.byModel" :key="m.model" class="space-y-1.5">
+                                <div class="rank-row">
+                                    <div class="min-w-0">
+                                        <div class="truncate text-sm font-medium text-gray-800" :title="m.model">{{ m.model || 'unknown' }}</div>
+                                        <div class="text-xs text-gray-400">{{ formatNumber(m.requests) }} 次 · {{ compactNumber(m.promptTokens) }} / {{ compactNumber(m.completionTokens) }}</div>
+                                    </div>
+                                    <div class="text-sm font-semibold mono">{{ compactNumber(m.totalTokens) }}</div>
+                                </div>
+                                <div class="rank-bar"><span :style="{width: usageModelShare(m) + '%'}"></span></div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-10 text-center">暂无模型数据</div>
+                    </div>
+
+                    <div class="dash-card p-4 overflow-auto">
+                        <div class="dash-card-title mb-3">用户用量 Top 20</div>
+                        <table v-if="usageSummary.byUser && usageSummary.byUser.length">
+                            <thead><tr><th>用户</th><th>请求</th><th>输入</th><th>输出</th><th>Tokens</th></tr></thead>
+                            <tbody>
+                                <tr v-for="u in usageSummary.byUser" :key="u.userId">
+                                    <td>{{ u.username || '#'+u.userId }}</td>
+                                    <td class="mono">{{ formatNumber(u.requests) }}</td>
+                                    <td class="mono">{{ compactNumber(u.promptTokens) }}</td>
+                                    <td class="mono">{{ compactNumber(u.completionTokens) }}</td>
+                                    <td class="font-semibold mono">{{ compactNumber(u.totalTokens) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div v-else class="text-sm text-gray-400 py-10 text-center">暂无用户用量</div>
+                    </div>
+                </div>
+
+                <div class="dash-card p-4 overflow-auto">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="dash-card-title">最近请求</div>
+                        <div class="text-xs text-gray-400">最近 12 条</div>
+                    </div>
+                    <table v-if="usageSummary.recent && usageSummary.recent.length">
+                        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>接口</th><th>输入</th><th>输出</th><th>Tokens</th></tr></thead>
+                        <tbody>
+                            <tr v-for="r in usageSummary.recent" :key="r.id">
+                                <td class="text-xs text-gray-500">{{ formatDateTime(r.createdAt) }}</td>
+                                <td>{{ r.username || '#'+r.userId }}</td>
+                                <td class="max-w-xs truncate" :title="r.model">{{ r.model || '-' }}</td>
+                                <td class="text-xs text-gray-500 max-w-xs truncate" :title="r.endpoint">{{ formatEndpoint(r.endpoint) }}</td>
+                                <td class="mono">{{ formatNumber(r.promptTokens) }}</td>
+                                <td class="mono">{{ formatNumber(r.completionTokens) }}</td>
+                                <td class="font-semibold mono">{{ formatNumber(r.totalTokens) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div v-else class="text-sm text-gray-400 py-10 text-center">暂无请求记录</div>
+                </div>
             </div>
+
+            <div v-else class="dash-card p-10 text-center text-gray-400">正在加载用量数据...</div>
         </section>
 
         <!-- 审计日志 -->
@@ -552,6 +705,68 @@ createApp({
             try { usageSummary.value = await sync.adminApiUsageSummary(usageRange.value); }
             catch (e) { toast(e.message, 'error'); }
         }
+        const usageTotals = computed(() => usageSummary.value?.totals || {});
+        const usageSeries = computed(() => usageSummary.value?.series || []);
+        const usageRangeLabel = computed(() => ({ '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天' }[usageRange.value] || '近 7 天'));
+        const usageModelMax = computed(() => Math.max(1, ...(usageSummary.value?.byModel || []).map(m => Number(m.totalTokens || 0))));
+        const usageEndpointMax = computed(() => Math.max(1, ...(usageSummary.value?.byEndpoint || []).map(e => Number(e.totalTokens || 0))));
+        function formatNumber(value) {
+            return new Intl.NumberFormat('zh-CN').format(Number(value || 0));
+        }
+        function compactNumber(value) {
+            return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
+        }
+        function usageTokenPart(type) {
+            const total = Number(usageTotals.value.totalTokens || 0);
+            if (!total) return 0;
+            const value = type === 'prompt' ? usageTotals.value.promptTokens : usageTotals.value.completionTokens;
+            return Math.round(Number(value || 0) / total * 100);
+        }
+        function buildUsageLine(values) {
+            if (!values.length) return '';
+            const max = Math.max(1, ...values.map(v => Number(v || 0)));
+            const left = 24, right = 620, top = 28, bottom = 212;
+            const width = right - left;
+            const height = bottom - top;
+            const divisor = Math.max(1, values.length - 1);
+            return values.map((value, index) => {
+                const x = left + (width * index / divisor);
+                const y = bottom - (Number(value || 0) / max * height);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+        }
+        const usageTokenTrendPoints = computed(() => buildUsageLine(usageSeries.value.map(s => s.totalTokens)));
+        const usageRequestTrendPoints = computed(() => buildUsageLine(usageSeries.value.map(s => s.requests)));
+        const usageTokenAreaPoints = computed(() => usageTokenTrendPoints.value ? `24,212 ${usageTokenTrendPoints.value} 620,212` : '');
+        const usageChartTicks = computed(() => {
+            const series = usageSeries.value;
+            if (series.length <= 5) return series;
+            const ticks = [];
+            for (let i = 0; i < 5; i++) {
+                ticks.push(series[Math.round((series.length - 1) * i / 4)]);
+            }
+            return ticks.filter(Boolean);
+        });
+        function formatUsageBucket(ts) {
+            const d = new Date(ts);
+            if (usageRange.value === '24h') return `${String(d.getHours()).padStart(2, '0')}:00`;
+            return `${d.getMonth() + 1}/${d.getDate()}`;
+        }
+        function usageModelShare(model) {
+            return Math.max(2, Math.round(Number(model?.totalTokens || 0) / usageModelMax.value * 100));
+        }
+        function usageEndpointShare(endpoint) {
+            return Math.max(2, Math.round(Number(endpoint?.totalTokens || 0) / usageEndpointMax.value * 100));
+        }
+        function formatEndpoint(endpoint) {
+            const value = String(endpoint || 'unknown');
+            try {
+                const url = new URL(value);
+                return `${url.hostname}${url.pathname === '/' ? '' : url.pathname}`;
+            } catch (_) {
+                return value;
+            }
+        }
 
         // Audit
         const audit = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
@@ -609,7 +824,9 @@ createApp({
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
             lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
-            usageSummary, usageRange, loadUsageSummary,
+            usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPoints, usageRequestTrendPoints,
+            usageTokenAreaPoints, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, usageTokenPart,
+            formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             audit, auditFilter, loadAudit,
             statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
         };
