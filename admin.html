@@ -304,9 +304,9 @@ tr:hover td{background:#fafbfc}
                         <div class="chart-wrap">
                             <svg viewBox="0 0 640 240" class="w-full h-full" preserveAspectRatio="none" role="img">
                                 <line v-for="y in [44,86,128,170,212]" :key="'grid-'+y" x1="24" :y1="y" x2="620" :y2="y" class="chart-grid"></line>
-                                <polygon v-if="usageTokenAreaPoints" :points="usageTokenAreaPoints" class="chart-area"></polygon>
-                                <polyline v-if="usageTokenTrendPoints" :points="usageTokenTrendPoints" class="chart-line-tokens"></polyline>
-                                <polyline v-if="usageRequestTrendPoints" :points="usageRequestTrendPoints" class="chart-line-requests"></polyline>
+                                <path v-if="usageTokenAreaPath" :d="usageTokenAreaPath" class="chart-area"></path>
+                                <path v-if="usageTokenTrendPath" :d="usageTokenTrendPath" class="chart-line-tokens"></path>
+                                <path v-if="usageRequestTrendPath" :d="usageRequestTrendPath" class="chart-line-requests"></path>
                             </svg>
                         </div>
                         <div class="flex justify-between text-[11px] text-gray-400 mt-2">
@@ -722,22 +722,54 @@ createApp({
             const value = type === 'prompt' ? usageTotals.value.promptTokens : usageTotals.value.completionTokens;
             return Math.round(Number(value || 0) / total * 100);
         }
-        function buildUsageLine(values) {
-            if (!values.length) return '';
-            const max = Math.max(1, ...values.map(v => Number(v || 0)));
+        function smoothUsageValues(values) {
+            if (values.length < 3) return values.map(v => Number(v || 0));
+            return values.map((value, index) => {
+                const current = Number(value || 0);
+                const previous = Number(values[Math.max(0, index - 1)] || 0);
+                const next = Number(values[Math.min(values.length - 1, index + 1)] || 0);
+                return previous * 0.18 + current * 0.64 + next * 0.18;
+            });
+        }
+        function buildUsagePoints(values) {
+            if (!values.length) return [];
+            const smoothed = smoothUsageValues(values);
+            const max = Math.max(1, ...smoothed.map(v => Number(v || 0)));
             const left = 24, right = 620, top = 28, bottom = 212;
             const width = right - left;
             const height = bottom - top;
-            const divisor = Math.max(1, values.length - 1);
-            return values.map((value, index) => {
-                const x = left + (width * index / divisor);
-                const y = bottom - (Number(value || 0) / max * height);
-                return `${x.toFixed(1)},${y.toFixed(1)}`;
-            }).join(' ');
+            const divisor = Math.max(1, smoothed.length - 1);
+            return smoothed.map((value, index) => ({
+                x: left + (width * index / divisor),
+                y: bottom - (Number(value || 0) / max * height),
+            }));
         }
-        const usageTokenTrendPoints = computed(() => buildUsageLine(usageSeries.value.map(s => s.totalTokens)));
-        const usageRequestTrendPoints = computed(() => buildUsageLine(usageSeries.value.map(s => s.requests)));
-        const usageTokenAreaPoints = computed(() => usageTokenTrendPoints.value ? `24,212 ${usageTokenTrendPoints.value} 620,212` : '');
+        function buildUsageCurve(values) {
+            const points = buildUsagePoints(values);
+            if (!points.length) return '';
+            if (points.length === 1) return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+            let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+            for (let i = 0; i < points.length - 1; i++) {
+                const current = points[i];
+                const next = points[i + 1];
+                const dx = next.x - current.x;
+                const c1x = current.x + dx * 0.42;
+                const c2x = next.x - dx * 0.42;
+                d += ` C ${c1x.toFixed(1)} ${current.y.toFixed(1)}, ${c2x.toFixed(1)} ${next.y.toFixed(1)}, ${next.x.toFixed(1)} ${next.y.toFixed(1)}`;
+            }
+            return d;
+        }
+        function buildUsageArea(values) {
+            const curve = buildUsageCurve(values);
+            const points = buildUsagePoints(values);
+            if (!curve || !points.length) return '';
+            const first = points[0];
+            const last = points[points.length - 1];
+            return `${curve} L ${last.x.toFixed(1)} 212 L ${first.x.toFixed(1)} 212 Z`;
+        }
+        const usageTokenTrendPath = computed(() => buildUsageCurve(usageSeries.value.map(s => s.totalTokens)));
+        const usageRequestTrendPath = computed(() => buildUsageCurve(usageSeries.value.map(s => s.requests)));
+        const usageTokenAreaPath = computed(() => buildUsageArea(usageSeries.value.map(s => s.totalTokens)));
         const usageChartTicks = computed(() => {
             const series = usageSeries.value;
             if (series.length <= 5) return series;
@@ -824,8 +856,8 @@ createApp({
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
             lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
-            usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPoints, usageRequestTrendPoints,
-            usageTokenAreaPoints, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, usageTokenPart,
+            usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
+            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             audit, auditFilter, loadAudit,
             statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
