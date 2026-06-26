@@ -24,6 +24,7 @@ const GLOBAL_KEYS = new Set([
   'user_profiles',
   'active_profile_id',
   'last_active_char',
+  'last_active_char_uuid',
   'memory_settings',
 ]);
 const SCOPED_KEYS = new Set(['chat', 'memories']);
