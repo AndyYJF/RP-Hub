@@ -2710,7 +2710,7 @@ createApp({
                 memory_settings: memorySettings,
             };
             const scoped = { chat: {}, memories: {} };
-            const MAX_SCOPED_SIZE = 8 * 1024 * 1024; // 8MB per scoped entry
+            const MAX_SCOPED_SIZE = 45 * 1024 * 1024; // 45MB per scoped entry (后端限制 50MB)
             for (const char of characters.value) {
                 if (!char.uuid) continue;
                 try {

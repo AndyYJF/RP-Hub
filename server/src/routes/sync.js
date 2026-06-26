@@ -28,7 +28,7 @@ const GLOBAL_KEYS = new Set([
   'memory_settings',
 ]);
 const SCOPED_KEYS = new Set(['chat', 'memories']);
-const MAX_VALUE_SIZE = 8 * 1024 * 1024; // 8MB per value (enough for large chat histories)
+const MAX_VALUE_SIZE = 50 * 1024 * 1024; // 50MB per value (角色卡含 avatar base64 可能很大)
 
 function checkKey(name, scoped) {
   const allowed = scoped ? SCOPED_KEYS : GLOBAL_KEYS;
