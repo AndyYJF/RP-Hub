@@ -804,6 +804,39 @@
             background-color: rgba(255, 255, 255, 0.88) !important;
         }
 
+        .message-sync-badge,
+        .nai-image-sync-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 1.25rem;
+            padding: 0 0.45rem;
+            border-radius: 999px;
+            border: 1px solid rgba(34, 197, 94, 0.28);
+            background: rgba(240, 253, 244, 0.88);
+            color: #15803d;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            white-space: nowrap;
+            box-shadow: 0 1px 4px rgba(21, 128, 61, 0.08);
+            pointer-events: none;
+        }
+
+        .nai-cached-image,
+        .nai-pending-image {
+            position: relative;
+        }
+
+        .nai-image-sync-badge {
+            position: absolute;
+            right: 0.45rem;
+            bottom: 0.45rem;
+            z-index: 2;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(8px);
+        }
+
 
 
         .desc-panel-stat-number {

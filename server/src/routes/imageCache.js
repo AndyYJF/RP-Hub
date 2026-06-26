@@ -99,6 +99,7 @@ router.head('/:key', async (req, res, next) => {
   try {
     const key = assertCacheKey(req.params.key);
     const meta = await readMeta(req.user.id, key);
+    if (!meta && req.query.optional === '1') return res.status(204).end();
     if (!meta) return res.status(404).end();
     res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');
     res.setHeader('Content-Length', String(meta.size || 0));
@@ -113,6 +114,7 @@ router.get('/:key', async (req, res, next) => {
   try {
     const key = assertCacheKey(req.params.key);
     const meta = await readMeta(req.user.id, key);
+    if (!meta && req.query.optional === '1') return res.status(204).end();
     if (!meta) return res.status(404).json({ error: '图片缓存不存在' });
     const file = imagePath(req.user.id, key);
     res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');

@@ -493,6 +493,8 @@ createApp({
         const toasts = ref([]);
         const isInitialServerSyncing = ref(false);
         const initialServerSyncText = ref('正在同步云端数据，请稍候...');
+        const chatSyncLocalVersions = reactive({});
+        const chatSyncServerVersions = reactive({});
         let toastIdSeed = 0;
         const chatContainer = ref(null);
         const isChatFullscreen = ref(false);
@@ -2288,7 +2290,7 @@ createApp({
             + ` data-directive-index="${escapeHtmlAttribute(directiveIndex)}"`
             + ` data-tags="${escapeHtmlAttribute(tags)}"`
             + ` data-artists="${escapeHtmlAttribute(artists)}"`
-            + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(200,200,200,0.15); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
+            + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(200,200,200,0.15); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px; position: relative;">'
             + '<div style="color: #999; font-size: 13px; padding: 20px;">生成图片中...</div></div>'
         );
 
@@ -2301,7 +2303,7 @@ createApp({
                 + ` data-directive-index="${escapeHtmlAttribute(meta.directiveIndex)}"`
                 + ` data-tags="${escapeHtmlAttribute(meta.tags)}"`
                 + ` data-artists="${escapeHtmlAttribute(meta.artists)}"`
-                + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px;">'
+                + ' style="width: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06); min-height: 120px; min-width: 120px; position: relative;">'
                 + '<div style="color: #999; font-size: 13px; padding: 20px;">加载图片缓存...</div></div>';
         };
 
@@ -2360,6 +2362,7 @@ createApp({
                     ...record,
                     serverUploadedAt: Date.now()
                 }, { clone: false });
+                markGeneratedImageElementsServerSynced(cacheKey);
             } catch (e) {
                 if (e?.code === 'IMAGE_CACHE_TOO_LARGE') {
                     console.warn('Generated image is too large for server cache:', e.message);
@@ -2465,6 +2468,7 @@ createApp({
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(historyToSave);
                 }
                 await setScopedStoredValue('chat', currentCharacter.value.uuid, historyToSave, { clone: false });
+                markChatSyncDirty(currentCharacter.value.uuid);
             } catch (e) {
                 console.error('Failed to save chat history:', e);
             }
@@ -2579,6 +2583,34 @@ createApp({
         let _serverSyncSuppressPush = false;
         let _serverSyncInitialPulled = false;
 
+        const getCurrentChatSyncId = () => currentCharacter.value?.uuid || '';
+
+        const markChatSyncDirty = (charUuid = getCurrentChatSyncId()) => {
+            if (!charUuid || _serverSyncSuppressPush) return;
+            chatSyncLocalVersions[charUuid] = Date.now();
+            chatSyncServerVersions[charUuid] = 0;
+        };
+
+        const markChatSyncClean = (charUuid, syncedAt = Date.now()) => {
+            if (!charUuid) return;
+            chatSyncServerVersions[charUuid] = Math.max(Number(chatSyncLocalVersions[charUuid] || 0), Number(syncedAt || Date.now()));
+        };
+
+        const isCurrentChatSynced = computed(() => {
+            const charUuid = getCurrentChatSyncId();
+            if (!serverSync?.isServerMode || !_serverSyncInitialPulled || !charUuid) return false;
+            return Number(chatSyncServerVersions[charUuid] || 0) >= Number(chatSyncLocalVersions[charUuid] || 0);
+        });
+
+        const isMessageSynced = (msg, index) => {
+            if (!msg || !isCurrentChatSynced.value) return false;
+            if (!['user', 'assistant'].includes(msg.role)) return false;
+            if (msg.isEditing_Message) return false;
+            if (typeof isMessageThinkingOrRunning === 'function' && isMessageThinkingOrRunning(msg)) return false;
+            if (index === chatHistory.value.length - 1 && !msg.isSelf && (isGenerating.value || isRemoteGenerating.value)) return false;
+            return true;
+        };
+
         const scheduleServerSyncPush = () => {
             if (!serverSync || !serverSync.isServerMode) return;
             if (_serverSyncSuppressPush) return;
@@ -2641,7 +2673,10 @@ createApp({
                     if (mem !== undefined) scoped.memories[char.uuid] = mem;
                 } catch (_) {}
             }
+            const syncedChatIds = Object.keys(scoped.chat);
             const result = await serverSync.bulkSync({ global, scoped });
+            const syncedAt = result?.updatedAt || Date.now();
+            syncedChatIds.forEach(id => markChatSyncClean(id, syncedAt));
             // Record local sync meta with server-returned timestamps so next pull can diff
             if (result && result.updatedAt) {
                 const meta = await getSyncMeta();
@@ -2813,7 +2848,12 @@ createApp({
                 const newMeta = { ...localMeta };
                 for (const [metaKey, sTs] of Object.entries(serverMeta)) {
                     const lTs = localMeta[metaKey] || 0;
-                    if (sTs >= lTs) newMeta[metaKey] = sTs;
+                    if (sTs >= lTs) {
+                        newMeta[metaKey] = sTs;
+                        if (metaKey.startsWith('scoped:chat:')) {
+                            markChatSyncClean(metaKey.slice('scoped:chat:'.length), sTs);
+                        }
+                    }
                 }
                 await setSyncMeta(newMeta);
 
@@ -5221,6 +5261,7 @@ ${content}
                 isSelf: true,
                 avatar: user.avatar
             });
+            markChatSyncDirty();
             await nextTick();
 
             // Single player
@@ -6706,6 +6747,7 @@ ${content}
                     assistantMessage = prepareAssistantMessageForAppend(continuingAssistantMessage);
                     if (reasoning) appendAssistantReasoning(assistantMessage, reasoning);
                     if (content) appendAssistantText(assistantMessage, 'content', content);
+                    markChatSyncDirty();
                     isReceiving.value = true;
                     return assistantMessage;
                 }
@@ -6713,6 +6755,7 @@ ${content}
                 assistantMessage = createAssistantMessage(content, reasoning);
                 promoteActiveToolCallsFromAssistant(assistantMessage);
                 chatHistory.value.push(assistantMessage);
+                markChatSyncDirty();
                 isReceiving.value = true;
                 return assistantMessage;
             };
@@ -6720,18 +6763,23 @@ ${content}
             try {
             const url = settings.apiUrl.endsWith('/v1') ? `${settings.apiUrl}/chat/completions` : `${settings.apiUrl}/v1/chat/completions`;
             // 对话代理：useChatProxy 开启时走后端代理记录用量
-            const chatProxyUrl = (window.RPHubServerSync?.baseUrl || '') + '/api/proxy/chat';
-            const useProxy = settings.useChatProxy && window.RPHubServerSync?.isLoggedIn && chatProxyUrl;
-                        const response = await fetch(useProxy ? chatProxyUrl : url, {
-                            method: 'POST',
-                            headers: useProxy
-                                ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${window.RPHubServerSync.accessToken}` }
-                                : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` },
-                            body: useProxy
-                                ? JSON.stringify({ targetUrl: url, apiKey: settings.apiKey, model: settings.model, messages: apiMessages, temperature: settings.temperature, stream: settings.stream })
-                                : JSON.stringify({ model: settings.model, messages: apiMessages, temperature: settings.temperature, stream: settings.stream }),
-                            signal: abortController.value.signal
-                        });
+            const syncClient = window.RPHubServerSync;
+            const useProxy = settings.useChatProxy && syncClient?.isLoggedIn && typeof syncClient.proxyChat === 'function';
+                        const response = useProxy
+                            ? await syncClient.proxyChat({
+                                targetUrl: url,
+                                apiKey: settings.apiKey,
+                                model: settings.model,
+                                messages: apiMessages,
+                                temperature: settings.temperature,
+                                stream: settings.stream
+                            }, { signal: abortController.value.signal })
+                            : await fetch(url, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` },
+                                body: JSON.stringify({ model: settings.model, messages: apiMessages, temperature: settings.temperature, stream: settings.stream }),
+                                signal: abortController.value.signal
+                            });
 
                         if (!response.ok) {
                             let errorDetail = '';
@@ -10657,11 +10705,42 @@ image###生成的提示词###
             throw new Error(`无法从生图响应中提取图片${detail ? `：${detail}` : ''}`);
         };
 
-        const renderNaiImageElement = (el, imageUrl) => {
-            el.innerHTML = `<img src="${imageUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">`;
+        const renderNaiImageSyncBadge = () => '<span class="nai-image-sync-badge" title="图片已同步到云端">已同步</span>';
+
+        const markNaiImageElementServerSynced = (el, synced = true) => {
+            if (!el) return;
+            if (synced) {
+                el.setAttribute('data-server-synced', '1');
+                if (!el.querySelector('.nai-image-sync-badge')) {
+                    el.insertAdjacentHTML('beforeend', renderNaiImageSyncBadge());
+                }
+            } else {
+                el.removeAttribute('data-server-synced');
+                el.querySelectorAll('.nai-image-sync-badge').forEach(badge => badge.remove());
+            }
+        };
+
+        const markGeneratedImageElementsServerSynced = (cacheKey) => {
+            if (!cacheKey) return;
+            document.querySelectorAll('.nai-cached-image, .nai-pending-image').forEach(el => {
+                if (el.getAttribute('data-cache-key') === cacheKey) {
+                    markNaiImageElementServerSynced(el, true);
+                }
+            });
+        };
+
+        const renderNaiImageElement = (el, imageUrl, options = {}) => {
+            const safeImageUrl = escapeHtmlAttribute(imageUrl);
+            el.innerHTML = `<img src="${safeImageUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">${options.serverSynced ? renderNaiImageSyncBadge() : ''}`;
             el.style.background = 'rgba(255,255,255,0.32)';
             el.style.minHeight = '';
             el.style.minWidth = '';
+            el.style.position = 'relative';
+            if (options.serverSynced) {
+                el.setAttribute('data-server-synced', '1');
+            } else {
+                el.removeAttribute('data-server-synced');
+            }
         };
 
         const createNaiMissingCacheHtml = (hasPromptMeta) => {
@@ -10711,10 +10790,12 @@ image###生成的提示词###
             el.removeAttribute('data-missing-cache');
             el.removeAttribute('data-done');
             el.removeAttribute('data-retry-count');
+            el.removeAttribute('data-server-synced');
             el.innerHTML = '<div style="color: #999; font-size: 13px; padding: 20px;">生成图片中...</div>';
             el.style.background = 'rgba(200,200,200,0.15)';
             el.style.minHeight = '120px';
             el.style.minWidth = '120px';
+            el.style.position = 'relative';
             processPendingNaiImages();
         };
 
@@ -10751,13 +10832,13 @@ image###生成的提示词###
                         if (!cached.serverUploadedAt) {
                             window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
                         }
-                        renderNaiImageElement(el, URL.createObjectURL(cached.blob));
+                        renderNaiImageElement(el, URL.createObjectURL(cached.blob), { serverSynced: !!cached.serverUploadedAt });
                         el.setAttribute('data-done', '1');
                     } else if (cached?.url) {
                         if (!cached.serverUploadedAt) {
                             window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
                         }
-                        renderNaiImageElement(el, cached.url);
+                        renderNaiImageElement(el, cached.url, { serverSynced: !!cached.serverUploadedAt });
                         el.setAttribute('data-done', '1');
                     } else {
                         setNaiMissingCacheState(el);
@@ -10781,8 +10862,7 @@ image###生成的提示词###
             const maxQueueRetries = 6;
             // 通过后端代理转发，避免浏览器跨域 CORS 限制
             const sync = window.RPHubServerSync;
-            const proxyUrl = sync && sync.baseUrl ? sync.baseUrl + '/api/proxy/nai-generate' : null;
-            const authToken = sync && sync.accessToken ? sync.accessToken : null;
+            const useNaiProxy = sync?.isLoggedIn && typeof sync.proxyNaiGenerate === 'function';
 
             for (const el of placeholders) {
                 el.setAttribute('data-loaded', '1'); // mark as processing
@@ -10814,13 +10894,9 @@ image###生成的提示词###
                             negative_prompt: NAI_NEGATIVE,
                         }
                     };
-                    if (proxyUrl && authToken) {
+                    if (useNaiProxy) {
                         // 走后端代理（同源，无 CORS 问题）
-                        resp = await fetch(proxyUrl, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ targetUrl: generateUrl, token, body: naiBody })
-                        });
+                        resp = await sync.proxyNaiGenerate({ targetUrl: generateUrl, token, body: naiBody });
                     } else {
                         // 直连（可能被 CORS 拦截，作为后备）
                         resp = await fetch(generateUrl, {
@@ -11626,6 +11702,7 @@ image###生成的提示词###
             const newMessage = { role: 'user', content: text, id: generateUUID(), isSelf: true, isTriggered: true, shouldAnimate: true, skipReveal: true };
             // Push and force update to ensure v-if picks up the new property
             chatHistory.value = [...chatHistory.value, newMessage];
+            markChatSyncDirty();
 
             await nextTick();
 
@@ -12469,7 +12546,7 @@ image###生成的提示词###
             getCharacterWICount, getCharacterRegexCount,
             handleAvatarUpload, importCharacter, exportCharacter,
             createPreset, editPreset, savePreset, deletePreset, movePreset,
-            renderMarkdown, messageUsesHtmlFrame, messageUsesWideLayout, parseCot, formatTimeAgo, closeCharacterEditor: () => showCharacterEditor.value = false,
+            renderMarkdown, messageUsesHtmlFrame, messageUsesWideLayout, isMessageSynced, parseCot, formatTimeAgo, closeCharacterEditor: () => showCharacterEditor.value = false,
             openExportModal: (type) => {
                 exportType.value = type;
                 selectedExportIndices.value.clear();

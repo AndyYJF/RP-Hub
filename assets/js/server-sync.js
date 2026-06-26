@@ -106,6 +106,29 @@
             this._emit(EVENT_CHANGE, { user: null });
         }
 
+        _decodeJwtPayload(token) {
+            try {
+                const payload = String(token || '').split('.')[1];
+                if (!payload) return null;
+                const padded = payload.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - payload.length % 4) % 4);
+                return JSON.parse(atob(padded));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        _shouldRefreshAccessToken() {
+            const payload = this._decodeJwtPayload(this.accessToken);
+            const exp = Number(payload?.exp || 0);
+            if (!exp) return false;
+            return Date.now() >= exp * 1000 - 60 * 1000;
+        }
+
+        async _ensureFreshAccessToken() {
+            if (!this.accessToken || !this.refreshToken || !this._shouldRefreshAccessToken()) return true;
+            return this._refreshAccessToken();
+        }
+
         // ---------- HTTP ----------
         async _request(path, options = {}) {
             if (!this.baseUrl) {
@@ -113,6 +136,7 @@
                 e.code = 'NO_BASEURL';
                 throw e;
             }
+            await this._ensureFreshAccessToken();
             const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
             if (this.accessToken && !headers.Authorization) {
                 headers.Authorization = 'Bearer ' + this.accessToken;
@@ -152,6 +176,7 @@
                 e.code = 'NO_BASEURL';
                 throw e;
             }
+            await this._ensureFreshAccessToken();
             const headers = { ...(options.headers || {}) };
             if (this.accessToken && !headers.Authorization) {
                 headers.Authorization = 'Bearer ' + this.accessToken;
@@ -292,6 +317,26 @@
             return this.user;
         }
 
+        async proxyChat(payload, options = {}) {
+            if (!this.isLoggedIn) return null;
+            return this._rawRequest('/api/proxy/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload || {}),
+                signal: options.signal,
+            });
+        }
+
+        async proxyNaiGenerate(payload, options = {}) {
+            if (!this.isLoggedIn) return null;
+            return this._rawRequest('/api/proxy/nai-generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload || {}),
+                signal: options.signal,
+            });
+        }
+
         // ---------- Sync API ----------
         async pullAll() {
             if (!this.isServerMode) return null;
@@ -362,9 +407,10 @@
         async downloadImageCache(cacheKey) {
             if (!this.isServerMode || !cacheKey) return null;
             try {
-                const res = await this._rawRequest('/api/image-cache/' + encodeURIComponent(cacheKey), {
+                const res = await this._rawRequest('/api/image-cache/' + encodeURIComponent(cacheKey) + '?optional=1', {
                     method: 'GET',
                 });
+                if (res.status === 204) return null;
                 const blob = await res.blob();
                 return {
                     blob,
