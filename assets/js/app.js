@@ -967,14 +967,14 @@ createApp({
             if (settings.apiProviderKeys[providerId] !== (newKey || '')) {
                 settings.apiProviderKeys[providerId] = newKey || '';
             }
-            scheduleServerSyncPush();
+            if (_initComplete) scheduleServerSyncPush();
         });
 
         watch(() => settings.apiUrl, (newUrl) => {
             if (isCustomApiProviderId(settings.apiProviderId)) {
                 settings[getCustomApiUrlKey(settings.apiProviderId)] = newUrl || '';
             }
-            scheduleServerSyncPush();
+            if (_initComplete) scheduleServerSyncPush();
         });
 
         const syncSettingsToGenerator = () => {
@@ -2582,6 +2582,8 @@ createApp({
         let _serverSyncPulling = false;
         let _serverSyncSuppressPush = false;
         let _serverSyncInitialPulled = false;
+        let _serverScopedMetaCache = {};
+        let _serverSyncAcceptedRemoteGlobalData = false;
 
         const getCurrentChatSyncId = () => currentCharacter.value?.uuid || '';
 
@@ -2594,6 +2596,66 @@ createApp({
         const markChatSyncClean = (charUuid, syncedAt = Date.now()) => {
             if (!charUuid) return;
             chatSyncServerVersions[charUuid] = Math.max(Number(chatSyncLocalVersions[charUuid] || 0), Number(syncedAt || Date.now()));
+        };
+
+        const SCOPED_SYNC_NAMES = ['chat', 'memories'];
+
+        const getLastActiveCharacterUuidForSync = () => {
+            if (typeof lastActiveCharacterId.value === 'string' && lastActiveCharacterId.value) {
+                return lastActiveCharacterId.value;
+            }
+            const fallbackIndex = Number(lastActiveCharacterIndexFallback.value);
+            if (Number.isFinite(fallbackIndex) && fallbackIndex >= 0) {
+                return characters.value[fallbackIndex]?.uuid || '';
+            }
+            return '';
+        };
+
+        const pullScopedValuesForCharacter = async (charUuid, options = {}) => {
+            const result = { changed: false, localNewer: false, acceptedMetaKeys: [], acceptedMeta: {} };
+            if (!serverSync?.isServerMode || !charUuid || typeof serverSync.getScoped !== 'function') return result;
+
+            const names = options.names || SCOPED_SYNC_NAMES;
+            const localMeta = options.localMeta || await getSyncMeta();
+            const serverMeta = options.serverMeta || _serverScopedMetaCache || {};
+            for (const name of names) {
+                const metaKey = `scoped:${name}:${charUuid}`;
+                const knownServerTs = Number(serverMeta[metaKey] || 0);
+                const localTs = Number(localMeta[metaKey] || 0);
+                if (knownServerTs && localTs > knownServerTs) {
+                    result.localNewer = true;
+                    continue;
+                }
+                if (knownServerTs && localTs === knownServerTs && !options.force) {
+                    continue;
+                }
+
+                let remote;
+                try {
+                    remote = await serverSync.getScoped(name, charUuid);
+                } catch (e) {
+                    console.warn('[ServerSync] scoped pull failed:', name, charUuid, e?.message || e);
+                    continue;
+                }
+                const remoteTs = Number(remote?.updatedAt || 0);
+                if (!remoteTs || remote.value === undefined) continue;
+                serverMeta[metaKey] = remoteTs;
+                _serverScopedMetaCache[metaKey] = remoteTs;
+                if (!options.force && localTs > remoteTs) {
+                    result.localNewer = true;
+                    continue;
+                }
+
+                const nextValue = name === 'chat'
+                    ? sanitizeChatHistoryImageData(remote.value).messages
+                    : remote.value;
+                await setScopedStoredValue(name, charUuid, nextValue, { clone: false });
+                result.changed = true;
+                result.acceptedMetaKeys.push(metaKey);
+                result.acceptedMeta[metaKey] = remoteTs;
+                if (name === 'chat') markChatSyncClean(charUuid, remoteTs);
+            }
+            return result;
         };
 
         const isCurrentChatSynced = computed(() => {
@@ -2741,11 +2803,16 @@ createApp({
             _serverSyncPulling = true;
             _serverSyncSuppressPush = true;
             let hasLocalNewer = false; // track if local has data newer than server
+            let acceptedRemoteGlobalData = false;
             try {
-                const data = await serverSync.pullAll();
+                const data = typeof serverSync.pullBootstrap === 'function'
+                    ? await serverSync.pullBootstrap()
+                    : await serverSync.pullAll();
                 if (!data) return;
                 const serverMeta = data.updatedAt || {};
+                _serverScopedMetaCache = { ..._serverScopedMetaCache, ...serverMeta };
                 const localMeta = await getSyncMeta();
+                const acceptedScopedMetaKeys = new Set();
                 const g = data.global || {};
 
                 // ---- Helper: decide for a global key whether to take remote, keep local, or no-change ----
@@ -2767,11 +2834,13 @@ createApp({
                     const decision = decide('characters');
                     if (decision === 'remote') {
                         characters.value = g.characters;
+                        acceptedRemoteGlobalData = true;
                     } else if (decision === 'equal') {
                         // Both sides unchanged since last sync — keep local (identical anyway)
                     } else {
                         // 'local' or ambiguous — do UUID-level merge to preserve both sides' new cards
                         const merged = mergeCharacters(characters.value, g.characters, 'remote');
+                        if (JSON.stringify(characters.value) !== JSON.stringify(merged)) acceptedRemoteGlobalData = true;
                         characters.value = merged;
                         if (decision === 'local') hasLocalNewer = true;
                     }
@@ -2786,11 +2855,18 @@ createApp({
                     if (!(key in g)) continue;
                     const decision = decide(key);
                     if (decision === 'remote') {
+                        acceptedRemoteGlobalData = true;
                         switch (key) {
                             case 'settings':
                                 Object.keys(g.settings).forEach(k => {
                                     if (Object.prototype.hasOwnProperty.call(settings, k)) settings[k] = g.settings[k];
                                 });
+                                normalizeApiProviderSettings();
+                                normalizeImageGenProviderSettings();
+                                settings.fontFamily = normalizeFontFamily(settings.fontFamily);
+                                applyFontFamily(settings.fontFamily);
+                                settings.contextSize = MAX_CONTEXT_SIZE;
+                                normalizeActiveToolAggressivenessSettings();
                                 break;
                             case 'user': Object.assign(user, g.user); break;
                             case 'user_profiles': userProfiles.value = g.user_profiles; break;
@@ -2820,11 +2896,29 @@ createApp({
                     // 'local' or 'equal' -> keep current local value (don't touch)
                 }
 
+                const activeScopedId = getLastActiveCharacterUuidForSync();
+                if (activeScopedId && data.scopedMeta && typeof serverSync.getScoped === 'function') {
+                    const scopedPull = await pullScopedValuesForCharacter(activeScopedId, { serverMeta, localMeta });
+                    scopedPull.acceptedMetaKeys.forEach(key => acceptedScopedMetaKeys.add(key));
+                    if (scopedPull.localNewer) hasLocalNewer = true;
+                }
+                if (data.scopedMeta) {
+                    for (const [metaKey, localTs] of Object.entries(localMeta)) {
+                        if (!metaKey.startsWith('scoped:')) continue;
+                        const serverTs = Number(serverMeta[metaKey] || 0);
+                        if (!serverTs || Number(localTs || 0) > serverTs) {
+                            hasLocalNewer = true;
+                            break;
+                        }
+                    }
+                }
+
                 // ---- Scoped data (chat / memories): per-id timestamp comparison ----
                 const scoped = data.scoped || {};
                 if (db) {
                     for (const [name, map] of Object.entries(scoped)) {
                         for (const [id, value] of Object.entries(map)) {
+                            const metaKey = `scoped:${name}:${id}`;
                             const sTs = serverMeta[`scoped:${name}:${id}`] || 0;
                             const lTs = localMeta[`scoped:${name}:${id}`] || 0;
                             if (sTs >= lTs) {
@@ -2834,6 +2928,7 @@ createApp({
                                         ? sanitizeChatHistoryImageData(value).messages
                                         : value;
                                     await setScopedStoredValue(name, id, nextValue);
+                                    acceptedScopedMetaKeys.add(metaKey);
                                 } catch (_) {}
                             } else {
                                 // local is newer — keep local, will be pushed
@@ -2844,10 +2939,12 @@ createApp({
                 }
 
                 _serverSyncInitialPulled = true;
+                if (acceptedRemoteGlobalData) _serverSyncAcceptedRemoteGlobalData = true;
                 // Update local sync meta to server timestamps for keys we accepted
                 const newMeta = { ...localMeta };
                 for (const [metaKey, sTs] of Object.entries(serverMeta)) {
                     const lTs = localMeta[metaKey] || 0;
+                    if (metaKey.startsWith('scoped:') && !acceptedScopedMetaKeys.has(metaKey)) continue;
                     if (sTs >= lTs) {
                         newMeta[metaKey] = sTs;
                         if (metaKey.startsWith('scoped:chat:')) {
@@ -2972,7 +3069,6 @@ createApp({
                 applyFontFamily(settings.fontFamily);
                 delete settings.renderLayerLimit;
                 settings.contextSize = MAX_CONTEXT_SIZE;
-                settings.stream = true;
                 normalizeActiveToolAggressivenessSettings();
 
                 const savedPresets = await getStoredValue('presets');
@@ -3244,6 +3340,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         };
 
         watch(isAutoImageGenEnabled, (newVal) => {
+            if (!_initComplete) return;
             if (newVal) {
                 let messages = [];
                 const regexMessages = updateImageGenRegexState({ enableRegex: true });
@@ -3258,6 +3355,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         });
 
         watch(() => settings.imageStyle, () => {
+            if (!_initComplete) return;
             const messages = updateImageGenRegexState({ enableRegex: isAutoImageGenEnabled.value });
             if (isAutoImageGenEnabled.value && messages && messages.length > 0) {
                 showToast('生图风格已切换：' + messages.join('，'), 'success');
@@ -3265,12 +3363,14 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         });
 
         watch(() => settings.customImageArtists, () => {
+            if (!_initComplete) return;
             if (settings.imageStyle === 'custom') {
                 updateImageGenRegexState({ enableRegex: isAutoImageGenEnabled.value });
             }
         });
 
         watch(() => settings.imageSize, () => {
+            if (!_initComplete) return;
             const messages = updateImageGenRegexState({ enableRegex: isAutoImageGenEnabled.value });
             if (isAutoImageGenEnabled.value && messages && messages.length > 0) {
                 showToast('生图比例已切换：' + messages.join('，'), 'success');
@@ -3278,6 +3378,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         });
 
         watch(() => settings.imageGenCount, () => {
+            if (!_initComplete) return;
             enforceSpecialRules();
         });
 
@@ -3298,6 +3399,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
 
         // Debounced Save
         const debouncedSave = debounce(() => {
+            if (!_initComplete || _serverSyncPulling) return;
             saveData({ saveMemories: false });
         }, 1000);
 
@@ -10955,6 +11057,7 @@ image###生成的提示词###
         });
 
         watch(() => settings.imageGenKey, () => {
+            if (!_initComplete) return;
             enforceSpecialRules();
             if (isAutoImageGenEnabled.value) {
                 updateImageGenRegexState({ enableRegex: true });
@@ -10964,6 +11067,7 @@ image###生成的提示词###
         });
 
         watch(() => [settings.imageGenProtocol, settings.imageGenModel], () => {
+            if (!_initComplete) return;
             enforceSpecialRules();
             saveData();
         });
@@ -11019,6 +11123,20 @@ image###生成的提示词###
             if (!char.uuid) {
                 char.uuid = generateUUID();
                 saveData();
+            }
+
+            if (_serverSyncInitialPulled && serverSync?.isServerMode && typeof serverSync.getScoped === 'function') {
+                const scopedPull = await pullScopedValuesForCharacter(char.uuid);
+                if (scopedPull.acceptedMetaKeys.length) {
+                    const meta = await getSyncMeta();
+                    Object.assign(meta, scopedPull.acceptedMeta);
+                    await setSyncMeta(meta);
+                }
+                if (scopedPull.localNewer) {
+                    setTimeout(() => {
+                        pushServerSyncNow().catch(e => console.warn('[ServerSync] scoped post-pull push failed:', e?.message || e));
+                    }, 1000);
+                }
             }
 
             // Try to load saved chat history for this character
@@ -11738,6 +11856,18 @@ image###生成的提示词###
             // 拉取服务端公告（延迟 2 秒，避免与版本更新弹窗同时弹出）
             setTimeout(() => fetchAndShowAnnouncements(), 2000);
 
+            const getStartupGlobalSnapshot = () => JSON.stringify({
+                settings: cloneForStorage(settings),
+                presets: cloneForStorage(presets.value),
+                regex: cloneForStorage(regexScripts.value),
+                globalRegex: cloneForStorage(globalRegexScripts.value),
+                worldInfo: cloneForStorage(worldInfo.value),
+                globalWorldInfo: cloneForStorage(globalWorldInfo.value),
+                globalUiTemplates: cloneForStorage(globalUiTemplates.value),
+                activeTools: cloneForStorage(activeTools.value)
+            });
+            const startupGlobalSnapshot = getStartupGlobalSnapshot();
+
             // --- 全局清理废弃正则 (思维隐藏及旧版画图迁移项已清理完毕，保留基础结构) ---
             const obsoleteRegexNames = ['隐藏正文的thinking', 'Nai画图正则-本子风', 'Nai画图正则-竖图'];
             let cleanedCount = 0;
@@ -11754,7 +11884,6 @@ image###生成的提示词###
 
             if (cleanedCount > 0 || regexScripts.value.length < currentOriginalLength) {
                 console.log(`[Cleanup] 已完成系统清理: ${obsoleteRegexNames.join(', ')}`);
-                saveData(); // 持久化清理结果
             }
 
             // 每次刷新检查有无名为“默认”的预设，如果有则去除
@@ -11770,9 +11899,6 @@ image###生成的提示词###
                 tempUserSetup.person = user.person || 'second';
                 showUserSetupModal.value = true;
             }
-
-            // 每次启动时强制重置温度为 1.0
-            settings.temperature = 1.0;
 
             // --- Restore Default API Settings if enabled ---
             // Cleanup legacy API mode settings
@@ -12248,8 +12374,11 @@ image###生成的提示词###
 
 
 
-            // Save enforced defaults immediately (仅保存预设/正则等结构性数据)
-            saveData();
+            const startupGlobalsChanged = getStartupGlobalSnapshot() !== startupGlobalSnapshot;
+            if (startupGlobalsChanged || _serverSyncAcceptedRemoteGlobalData) {
+                await saveData({ saveMemories: false });
+                _serverSyncAcceptedRemoteGlobalData = false;
+            }
 
             // 初始化守卫解除：此后 saveData 才允许写入 user / memorySettings
             _initComplete = true;

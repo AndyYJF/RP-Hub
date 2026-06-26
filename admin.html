@@ -61,12 +61,47 @@ tr:hover td{background:#fafbfc}
 .mono{font-variant-numeric:tabular-nums}
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
 .modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:640px;width:92%;max-height:85vh;overflow:auto}
+@media (max-width: 768px){
+body{background:#f9fafb}
+#app.admin-shell{flex-direction:column}
+#app .admin-sidebar{position:sticky;top:0;z-index:30;width:100%;border-right:0;border-bottom:1px solid #e5e7eb;padding:.65rem .75rem;gap:.55rem}
+#app .admin-sidebar>div:first-child{display:flex;align-items:center;justify-content:space-between;border-bottom:0;margin:0;padding:.15rem .2rem}
+#app .admin-sidebar nav{display:flex;gap:.45rem;overflow-x:auto;padding-bottom:.15rem;scrollbar-width:none}
+#app .admin-sidebar nav::-webkit-scrollbar{display:none}
+#app .admin-sidebar .nav-item{flex:0 0 auto;white-space:nowrap;padding:.55rem .7rem;font-size:.82rem;border-radius:.55rem}
+#app .admin-sidebar .border-t{border-top:0;padding-top:0;display:flex;gap:.45rem;overflow-x:auto}
+#app .admin-main{padding:1rem;overflow:visible}
+#app .admin-main h2{font-size:1.15rem}
+#app .admin-main .flex.items-center.justify-between{align-items:flex-start}
+#app .admin-main .flex.gap-2,#app .admin-main .flex.items-center.gap-2{flex-wrap:wrap;width:100%}
+#app .admin-main .w-48,#app .admin-main .w-36,#app .admin-main .w-32{width:100%}
+.input{font-size:16px}
+.btn{min-height:2.25rem}
+.stat-card{padding:.85rem;border-radius:.6rem}
+.stat-num{font-size:1.35rem;line-height:1.15}
+.metric-kicker{font-size:.64rem}
+.metric-sub{font-size:.68rem}
+.dash-card{border-radius:.65rem}
+.chart-wrap{height:210px}
+.rank-row{grid-template-columns:minmax(0,1fr);gap:.25rem}
+.rank-row>div:last-child{justify-self:start}
+.card.overflow-auto,.dash-card.overflow-auto{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{min-width:620px}
+th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
+.modal-mask{align-items:flex-end}
+.modal{width:100%;max-width:none;max-height:90vh;border-radius:1rem 1rem 0 0;padding:1rem}
+}
+@media (max-width: 420px){
+#app .admin-main{padding:.75rem}
+.grid.grid-cols-2{grid-template-columns:1fr}
+.chart-wrap{height:190px}
+}
 </style>
 </head>
 <body>
-<div id="app" v-cloak class="min-h-screen flex">
+<div id="app" v-cloak class="admin-shell min-h-screen flex">
     <!-- 侧边栏 -->
-    <aside class="w-60 bg-white border-r border-gray-200 p-3 flex flex-col">
+    <aside class="admin-sidebar w-60 bg-white border-r border-gray-200 p-3 flex flex-col">
         <div class="px-2 py-3 mb-2 border-b">
             <div class="text-xl font-bold"><span class="text-primary-600">RP</span>Hub</div>
             <div class="text-xs text-gray-500 mt-1">后台管理</div>
@@ -86,7 +121,7 @@ tr:hover td{background:#fafbfc}
     </aside>
 
     <!-- 主区 -->
-    <main class="flex-1 p-6 overflow-auto">
+    <main class="admin-main flex-1 p-6 overflow-auto">
         <div v-if="!sync.isAdmin" class="card p-12 text-center">
             <p class="text-gray-500 mb-3">需要管理员账号登录后才能访问后台</p>
             <button class="btn btn-primary" @click="goLogin">前往登录</button>

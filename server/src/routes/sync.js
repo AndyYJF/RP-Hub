@@ -78,6 +78,27 @@ router.get('/all', (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- GET /sync/bootstrap : global values + scoped timestamps ----------
+router.get('/bootstrap', (req, res, next) => {
+  try {
+    const rows = db.prepare(
+      'SELECT scope, name, value, updated_at FROM user_data WHERE user_id = ?'
+    ).all(req.user.id);
+    const data = { global: {}, scoped: {}, scopedMeta: {}, updatedAt: {} };
+    for (const r of rows) {
+      data.updatedAt[`${r.scope}:${r.name}`] = r.updated_at;
+      if (r.scope === 'global') {
+        data.global[r.name] = deserialize(r.value);
+      } else {
+        const [name, id] = r.name.split(':');
+        if (!data.scopedMeta[name]) data.scopedMeta[name] = {};
+        data.scopedMeta[name][id] = r.updated_at;
+      }
+    }
+    res.json(data);
+  } catch (e) { next(e); }
+});
+
 // ---------- GET /sync/global/:name ----------
 router.get('/global/:name', (req, res, next) => {
   try {

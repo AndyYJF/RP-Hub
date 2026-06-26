@@ -351,12 +351,35 @@
             }
         }
 
+        async pullBootstrap() {
+            if (!this.isServerMode) return null;
+            this._emit(EVENT_SYNC_START, { type: 'bootstrap' });
+            try {
+                const data = await this._request('/api/sync/bootstrap');
+                this.lastSync = Date.now();
+                lsSet(STORAGE_KEYS.lastSync, String(this.lastSync));
+                return data;
+            } catch (e) {
+                if (e?.status === 404) {
+                    return this.pullAll();
+                }
+                throw e;
+            } finally {
+                this._emit(EVENT_SYNC_END, { type: 'bootstrap' });
+            }
+        }
+
         async putGlobal(name, value) {
             if (!this.isServerMode) return null;
             return this._request('/api/sync/global/' + encodeURIComponent(name), {
                 method: 'PUT',
                 body: JSON.stringify({ value }),
             });
+        }
+
+        async getScoped(name, id) {
+            if (!this.isServerMode) return null;
+            return this._request(`/api/sync/scoped/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
         }
 
         async putScoped(name, id, value) {
