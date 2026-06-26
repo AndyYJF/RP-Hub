@@ -13,6 +13,7 @@ import adminRoutes from './routes/admin.js';
 import announcementsRoutes from './routes/announcements.js';
 import proxyRoutes from './routes/proxy.js';
 import chatProxyRoutes from './routes/chatProxy.js';
+import imageCacheRoutes from './routes/imageCache.js';
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/announcements', announcementsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/proxy', proxyRoutes);
 app.use('/api/proxy', chatProxyRoutes);
+app.use('/api/image-cache', imageCacheRoutes);
 
 // ---------- Static frontend hosting (optional) ----------
 if (config.staticDir && fs.existsSync(config.staticDir)) {

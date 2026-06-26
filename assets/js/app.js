@@ -2335,7 +2335,58 @@ createApp({
         const stripGeneratedImageCacheMarkersFromText = (text) => String(text || '')
             .replace(/image-cache###[^#]+###/g, '');
 
-        const setGeneratedImageCache = async (cacheKey, imageResult, meta = {}) => {
+        const getImageCacheServerSync = () => {
+            const sync = window.RPHubServerSync;
+            return sync?.isServerMode && typeof sync.uploadImageCache === 'function' && typeof sync.downloadImageCache === 'function'
+                ? sync
+                : null;
+        };
+
+        const uploadGeneratedImageCacheToServer = async (cacheKey, record) => {
+            const sync = getImageCacheServerSync();
+            if (!sync || !cacheKey || !record) return;
+            try {
+                let blob = record.blob || null;
+                if (!blob && record.url) {
+                    const resp = await fetch(record.url);
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    blob = await resp.blob();
+                }
+                if (!blob) return;
+                await sync.uploadImageCache(cacheKey, blob);
+                await setStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`, {
+                    ...record,
+                    serverUploadedAt: Date.now()
+                }, { clone: false });
+            } catch (e) {
+                if (e?.code === 'IMAGE_CACHE_TOO_LARGE') {
+                    console.warn('Generated image is too large for server cache:', e.message);
+                } else {
+                    console.warn('Failed to upload generated image cache:', e);
+                }
+            }
+        };
+
+        const downloadGeneratedImageCacheFromServer = async (cacheKey, meta = {}) => {
+            const sync = getImageCacheServerSync();
+            if (!sync || !cacheKey) return null;
+            try {
+                const remote = await sync.downloadImageCache(cacheKey);
+                if (!remote?.blob) return null;
+                const mimeType = remote.mimeType || remote.blob.type || 'image/png';
+                const blob = remote.blob.type ? remote.blob : remote.blob.slice(0, remote.blob.size, mimeType);
+                await setGeneratedImageCache(cacheKey, { blob }, {
+                    ...meta,
+                    serverUploadedAt: Date.now()
+                }, { uploadServer: false });
+                return getGeneratedImageCache(cacheKey);
+            } catch (e) {
+                console.warn('Failed to download generated image cache:', e);
+                return null;
+            }
+        };
+
+        const setGeneratedImageCache = async (cacheKey, imageResult, meta = {}, options = {}) => {
             if (!cacheKey || !imageResult) return;
             const record = {
                 createdAt: Date.now(),
@@ -2345,9 +2396,13 @@ createApp({
                 tags: String(meta.tags || ''),
                 artists: String(meta.artists || ''),
                 model: String(meta.model || ''),
-                size: String(meta.size || '')
+                size: String(meta.size || ''),
+                serverUploadedAt: Number(meta.serverUploadedAt || 0)
             };
             await setStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`, record, { clone: false });
+            if (options.uploadServer !== false) {
+                window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, record), 0);
+            }
         };
 
         const getGeneratedImageCache = async (cacheKey) => {
@@ -10667,11 +10722,26 @@ image###生成的提示词###
                 el.setAttribute('data-loaded', '1');
                 const cacheKey = el.getAttribute('data-cache-key') || '';
                 try {
-                    const cached = await getGeneratedImageCache(cacheKey);
+                    const cacheMeta = {
+                        tags: el.getAttribute('data-tags') || '',
+                        artists: el.getAttribute('data-artists') || '',
+                        model: settings.imageGenModel || '',
+                        size: settings.imageSize || ''
+                    };
+                    let cached = await getGeneratedImageCache(cacheKey);
+                    if (!cached?.blob && !cached?.url) {
+                        cached = await downloadGeneratedImageCacheFromServer(cacheKey, cacheMeta);
+                    }
                     if (cached?.blob) {
+                        if (!cached.serverUploadedAt) {
+                            window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
+                        }
                         renderNaiImageElement(el, URL.createObjectURL(cached.blob));
                         el.setAttribute('data-done', '1');
                     } else if (cached?.url) {
+                        if (!cached.serverUploadedAt) {
+                            window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
+                        }
                         renderNaiImageElement(el, cached.url);
                         el.setAttribute('data-done', '1');
                     } else {

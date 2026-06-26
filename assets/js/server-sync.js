@@ -146,6 +146,49 @@
             return body;
         }
 
+        async _rawRequest(path, options = {}) {
+            if (!this.baseUrl) {
+                const e = new Error('未配置服务器地址');
+                e.code = 'NO_BASEURL';
+                throw e;
+            }
+            const headers = { ...(options.headers || {}) };
+            if (this.accessToken && !headers.Authorization) {
+                headers.Authorization = 'Bearer ' + this.accessToken;
+            }
+            let res;
+            try {
+                res = await fetch(this.baseUrl + path, { ...options, headers });
+            } catch (e) {
+                const err = new Error('网络错误：' + (e.message || 'fetch failed'));
+                err.code = 'NETWORK';
+                throw err;
+            }
+            if (res.status === 401 && this.refreshToken && !options._retried) {
+                const refreshed = await this._refreshAccessToken();
+                if (refreshed) {
+                    return this._rawRequest(path, {
+                        ...options,
+                        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + this.accessToken },
+                        _retried: true,
+                    });
+                }
+            }
+            if (!res.ok) {
+                const text = await res.text().catch(() => '');
+                let body = null;
+                if (text) {
+                    try { body = JSON.parse(text); } catch (_) { body = text; }
+                }
+                const e = new Error((body && body.error) || ('HTTP ' + res.status));
+                e.status = res.status;
+                e.body = body;
+                if (res.status === 401) e.code = 'UNAUTHORIZED';
+                throw e;
+            }
+            return res;
+        }
+
         async _refreshAccessToken() {
             if (this._refreshing) return this._refreshing;
             this._refreshing = (async () => {
@@ -297,6 +340,40 @@
                 return r;
             } finally {
                 this._emit(EVENT_SYNC_END, { type: 'bulk' });
+            }
+        }
+
+        async uploadImageCache(cacheKey, blob) {
+            if (!this.isServerMode || !cacheKey || !blob) return null;
+            if (blob.size > 16 * 1024 * 1024) {
+                const e = new Error('图片缓存超过 16MB，已跳过服务器缓存');
+                e.code = 'IMAGE_CACHE_TOO_LARGE';
+                throw e;
+            }
+            const res = await this._rawRequest('/api/image-cache/' + encodeURIComponent(cacheKey), {
+                method: 'PUT',
+                headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+                body: blob,
+            });
+            const text = await res.text();
+            try { return text ? JSON.parse(text) : { ok: true }; } catch (_) { return { ok: true }; }
+        }
+
+        async downloadImageCache(cacheKey) {
+            if (!this.isServerMode || !cacheKey) return null;
+            try {
+                const res = await this._rawRequest('/api/image-cache/' + encodeURIComponent(cacheKey), {
+                    method: 'GET',
+                });
+                const blob = await res.blob();
+                return {
+                    blob,
+                    mimeType: res.headers.get('content-type') || blob.type || 'image/png',
+                    size: Number(res.headers.get('content-length') || blob.size || 0),
+                };
+            } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
             }
         }
 
