@@ -10361,23 +10361,45 @@ image###生成的提示词###
             }
             return String(data || status);
         };
-        const imageStringToResult = (imageValue) => {
-            if (/^data:image\//i.test(imageValue)) {
-                const match = imageValue.match(/^data:(image\/[^;]+);base64,(.*)$/is);
-                if (!match) return { url: imageValue };
+        const looksLikeRelativeImagePath = (value) => {
+            const trimmed = String(value || '').trim();
+            if (!trimmed || /[\s"'<>]/.test(trimmed)) return false;
+            if (!/^(?:\/(?!\/)|\.{1,2}\/)/.test(trimmed)) return false;
+            return /\.(?:png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(trimmed)
+                || /^\/(?:api|img|image|images|file|files|output|outputs|download|uploads?)\b/i.test(trimmed);
+        };
+        const isImageStringCandidate = (value, allowRelative = false) => {
+            const trimmed = String(value || '').trim();
+            return /^data:image\//i.test(trimmed)
+                || /^https?:\/\//i.test(trimmed)
+                || /^\/\//.test(trimmed)
+                || /^[A-Za-z0-9+/=]{120,}$/.test(trimmed)
+                || (allowRelative && looksLikeRelativeImagePath(trimmed));
+        };
+        const imageStringToResult = (imageValue, baseUrl = '') => {
+            const value = String(imageValue || '').trim();
+            if (/^data:image\//i.test(value)) {
+                const match = value.match(/^data:(image\/[^;]+);base64,(.*)$/is);
+                if (!match) return { url: value };
                 return { blob: base64ToBlob(match[2].replace(/\s+/g, ''), match[1]) };
             }
-            if (/^https?:\/\//i.test(imageValue)) return { url: imageValue };
-            return { blob: base64ToBlob(imageValue.replace(/^data:[^,]+,/, '').replace(/\s+/g, '')) };
+            if (/^https?:\/\//i.test(value)) return { url: value };
+            if (/^\/\//.test(value) || looksLikeRelativeImagePath(value)) {
+                try {
+                    return { url: new URL(value, baseUrl || window.location.href).href };
+                } catch (_) {
+                    return { url: value };
+                }
+            }
+            return { blob: base64ToBlob(value.replace(/^data:[^,]+,/, '').replace(/\s+/g, '')) };
         };
-        const extractImageFromJson = (payload) => {
+        const extractImageFromJson = (payload, baseUrl = '') => {
             const seen = new Set();
-            const findImageString = (value) => {
+            const findImageString = (value, key = '') => {
                 if (typeof value === 'string') {
                     const trimmed = value.trim();
-                    if (/^data:image\//i.test(trimmed)
-                        || /^https?:\/\//i.test(trimmed)
-                        || /^[A-Za-z0-9+/=]{120,}$/.test(trimmed)) {
+                    const allowRelative = /(?:image|img|url|path|file|output|result|base64|b64|data)/i.test(key);
+                    if (isImageStringCandidate(trimmed, allowRelative)) {
                         return trimmed;
                     }
                     return '';
@@ -10386,20 +10408,20 @@ image###生成的提示词###
                 seen.add(value);
                 if (Array.isArray(value)) {
                     for (const item of value) {
-                        const found = findImageString(item);
+                        const found = findImageString(item, key);
                         if (found) return found;
                     }
                     return '';
                 }
-                const preferredKeys = ['image', 'images', 'url', 'urls', 'data', 'output', 'result', 'base64', 'b64_json'];
+                const preferredKeys = ['image', 'images', 'image_url', 'imageUrl', 'url', 'urls', 'download_url', 'downloadUrl', 'file', 'path', 'data', 'output', 'result', 'base64', 'b64_json'];
                 for (const key of preferredKeys) {
                     if (Object.prototype.hasOwnProperty.call(value, key)) {
-                        const found = findImageString(value[key]);
+                        const found = findImageString(value[key], key);
                         if (found) return found;
                     }
                 }
-                for (const item of Object.values(value)) {
-                    const found = findImageString(item);
+                for (const [key, item] of Object.entries(value)) {
+                    const found = findImageString(item, key);
                     if (found) return found;
                 }
                 return '';
@@ -10410,7 +10432,7 @@ image###生成的提示词###
                 const message = payload?.error?.message || payload?.error || payload?.message || 'JSON response does not contain an image';
                 throw new Error(String(message));
             }
-            return imageStringToResult(imageValue);
+            return imageStringToResult(imageValue, baseUrl);
         };
         const extractJsonValuesFromText = (text) => {
             const values = [];
@@ -10447,13 +10469,13 @@ image###生成的提示词###
             }
             return values;
         };
-        const tryExtractImageFromText = (text) => {
+        const tryExtractImageFromText = (text, baseUrl = '') => {
             const trimmed = String(text || '').trim();
             if (!trimmed) throw new Error('Empty image response');
             const statusMessages = [];
 
             try {
-                return extractImageFromJson(JSON.parse(trimmed));
+                return extractImageFromJson(JSON.parse(trimmed), baseUrl);
             } catch (e) {
                 if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
                 try {
@@ -10476,7 +10498,7 @@ image###生成的提示词###
                     const payload = JSON.parse(line);
                     const statusMessage = getImageResponseStatusMessage(payload);
                     if (statusMessage) statusMessages.push(statusMessage);
-                    return extractImageFromJson(payload);
+                    return extractImageFromJson(payload, baseUrl);
                 } catch (e) {
                     if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
                 }
@@ -10487,20 +10509,25 @@ image###生成的提示词###
                     const payload = JSON.parse(jsonText);
                     const statusMessage = getImageResponseStatusMessage(payload);
                     if (statusMessage) statusMessages.push(statusMessage);
-                    return extractImageFromJson(payload);
+                    return extractImageFromJson(payload, baseUrl);
                 } catch (e) {
                     if (isPendingImageStatusText(e?.message)) statusMessages.push(e.message);
                 }
             }
 
             const dataUrlMatch = trimmed.match(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/i);
-            if (dataUrlMatch) return imageStringToResult(dataUrlMatch[0]);
+            if (dataUrlMatch) return imageStringToResult(dataUrlMatch[0], baseUrl);
 
             const imageUrlMatch = trimmed.match(/https?:\/\/[^\s"'<>]+/i);
             if (imageUrlMatch) return { url: imageUrlMatch[0] };
 
+            const relativeImagePathMatch = trimmed.match(/(?:^|[\s"'])((?:\/(?!\/)|\.{1,2}\/)[^\s"'<>]+)/i);
+            if (relativeImagePathMatch && looksLikeRelativeImagePath(relativeImagePathMatch[1])) {
+                return imageStringToResult(relativeImagePathMatch[1], baseUrl);
+            }
+
             const base64ImageMatch = trimmed.match(/(?:iVBOR|\/9j\/|UklGR)[A-Za-z0-9+/=\s]{120,}/);
-            if (base64ImageMatch) return imageStringToResult(base64ImageMatch[0]);
+            if (base64ImageMatch) return imageStringToResult(base64ImageMatch[0], baseUrl);
 
             if (statusMessages.length || /"status"\s*:\s*"queued"/i.test(trimmed) || isPendingImageStatusText(trimmed)) {
                 throw createPendingImageResponseError(statusMessages.length ? statusMessages : [trimmed.slice(0, 80)]);
@@ -10525,7 +10552,7 @@ image###生成的提示词###
                 || firstNonWhitespace === 0x5B) {
                 const text = new TextDecoder().decode(bytes);
                 try {
-                    return tryExtractImageFromText(text);
+                    return tryExtractImageFromText(text, resp.url || window.location.href);
                 } catch (e) {
                     textParseError = e;
                 }
