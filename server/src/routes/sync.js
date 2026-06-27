@@ -67,6 +67,10 @@ function makeStoredValue(value) {
   return { serialized, valueHash: hashSerializedValue(serialized) };
 }
 
+function hashMessageValue(message) {
+  return hashSerializedValue(serialize(message));
+}
+
 function deserialize(text) {
   if (text === null || text === undefined) return undefined;
   try { return JSON.parse(text); } catch (_) { return text; }
@@ -197,6 +201,48 @@ router.get('/scoped/:name/:id', (req, res, next) => {
       'SELECT value, updated_at FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
     ).get(req.user.id, 'scoped', scopedName);
     res.json({ value: row ? deserialize(row.value) : undefined, updatedAt: row?.updated_at || 0 });
+  } catch (e) { next(e); }
+});
+
+// ---------- POST /sync/scoped/chat/:id/diff : append-only chat diff ----------
+router.post('/scoped/chat/:id/diff', (req, res, next) => {
+  try {
+    const id = req.params.id;
+    checkKey('chat', true);
+    const scopedName = `chat:${id}`;
+    const row = db.prepare(
+      'SELECT value, value_hash, updated_at FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
+    ).get(req.user.id, 'scoped', scopedName);
+    if (!row) return res.json({ mode: 'missing', value: undefined, updatedAt: 0 });
+
+    const remoteValue = deserialize(row.value);
+    const valueHash = row.value_hash || hashSerializedValue(row.value);
+    if (!Array.isArray(remoteValue)) {
+      return res.json({ mode: 'full', value: remoteValue, updatedAt: row.updated_at, hash: valueHash });
+    }
+
+    const knownIds = Array.isArray(req.body?.knownIds) ? req.body.knownIds.map(v => String(v || '')) : [];
+    const knownHashes = Array.isArray(req.body?.knownHashes) ? req.body.knownHashes.map(v => String(v || '')) : [];
+    if (knownIds.length !== knownHashes.length || knownIds.length > remoteValue.length) {
+      return res.json({ mode: 'full', value: remoteValue, updatedAt: row.updated_at, hash: valueHash });
+    }
+
+    for (let i = 0; i < knownIds.length; i++) {
+      const remoteMessage = remoteValue[i];
+      const remoteId = remoteMessage && remoteMessage.id ? String(remoteMessage.id) : '';
+      if (!remoteId || remoteId !== knownIds[i] || hashMessageValue(remoteMessage) !== knownHashes[i]) {
+        return res.json({ mode: 'full', value: remoteValue, updatedAt: row.updated_at, hash: valueHash });
+      }
+    }
+
+    return res.json({
+      mode: 'append',
+      baseCount: knownIds.length,
+      totalCount: remoteValue.length,
+      messages: remoteValue.slice(knownIds.length),
+      updatedAt: row.updated_at,
+      hash: valueHash,
+    });
   } catch (e) { next(e); }
 });
 

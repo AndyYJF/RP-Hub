@@ -403,6 +403,17 @@
             return this._request(`/api/sync/scoped/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
         }
 
+        async getScopedChatDiff(id, state = {}) {
+            if (!this.isServerMode || !id) return null;
+            return this._request(`/api/sync/scoped/chat/${encodeURIComponent(id)}/diff`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    knownIds: Array.isArray(state.knownIds) ? state.knownIds : [],
+                    knownHashes: Array.isArray(state.knownHashes) ? state.knownHashes : [],
+                }),
+            });
+        }
+
         async putScoped(name, id, value) {
             if (!this.isServerMode) return null;
             return this._request(`/api/sync/scoped/${encodeURIComponent(name)}/${encodeURIComponent(id)}`, {

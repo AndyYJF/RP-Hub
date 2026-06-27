@@ -2614,8 +2614,18 @@ createApp({
             return '';
         };
 
+        const buildChatDiffState = (messages = []) => {
+            const safeMessages = sanitizeChatHistoryImageData(Array.isArray(messages) ? messages : []).messages
+                .map(stripRuntimeMessageFieldsForStorage);
+            return {
+                messages: safeMessages,
+                knownIds: safeMessages.map(message => String(message?.id || '')),
+                knownHashes: safeMessages.map(message => hashSyncValue(message)),
+            };
+        };
+
         const pullScopedValuesForCharacter = async (charUuid, options = {}) => {
-            const result = { changed: false, localNewer: false, acceptedMetaKeys: [], acceptedMeta: {} };
+            const result = { changed: false, localNewer: false, acceptedMetaKeys: [], acceptedMeta: {}, acceptedHashes: {} };
             if (!serverSync?.isServerMode || !charUuid || typeof serverSync.getScoped !== 'function') return result;
 
             const names = options.names || SCOPED_SYNC_NAMES;
@@ -2634,28 +2644,51 @@ createApp({
                 }
 
                 let remote;
+                let localChatState = null;
                 try {
-                    remote = await serverSync.getScoped(name, charUuid);
+                    if (name === 'chat' && typeof serverSync.getScopedChatDiff === 'function') {
+                        const localChat = await getScopedStoredValue('chat', charUuid);
+                        localChatState = buildChatDiffState(localChat);
+                        remote = await serverSync.getScopedChatDiff(charUuid, localChatState);
+                    } else {
+                        remote = await serverSync.getScoped(name, charUuid);
+                    }
                 } catch (e) {
                     console.warn('[ServerSync] scoped pull failed:', name, charUuid, e?.message || e);
                     continue;
                 }
                 const remoteTs = Number(remote?.updatedAt || 0);
-                if (!remoteTs || remote.value === undefined) continue;
+                if (!remoteTs || (remote.value === undefined && remote.mode !== 'append')) continue;
                 serverMeta[metaKey] = remoteTs;
                 _serverScopedMetaCache[metaKey] = remoteTs;
+                if (remote.hash) _serverSyncRemoteHashes[metaKey] = remote.hash;
                 if (!options.force && localTs > remoteTs) {
                     result.localNewer = true;
                     continue;
                 }
 
-                const nextValue = name === 'chat'
-                    ? sanitizeChatHistoryImageData(remote.value).messages
-                    : remote.value;
-                await setScopedStoredValue(name, charUuid, nextValue, { clone: false });
-                result.changed = true;
+                let nextValue;
+                let changed = true;
+                if (name === 'chat' && remote.mode === 'append') {
+                    const appendedMessages = sanitizeChatHistoryImageData(Array.isArray(remote.messages) ? remote.messages : []).messages
+                        .map(stripRuntimeMessageFieldsForStorage);
+                    nextValue = [
+                        ...(localChatState?.messages || []),
+                        ...appendedMessages
+                    ];
+                    changed = appendedMessages.length > 0;
+                } else {
+                    nextValue = name === 'chat'
+                        ? sanitizeChatHistoryImageData(remote.value).messages.map(stripRuntimeMessageFieldsForStorage)
+                        : remote.value;
+                }
+                if (changed) {
+                    await setScopedStoredValue(name, charUuid, nextValue, { clone: false });
+                    result.changed = true;
+                }
                 result.acceptedMetaKeys.push(metaKey);
                 result.acceptedMeta[metaKey] = remoteTs;
+                if (remote.hash) result.acceptedHashes[metaKey] = remote.hash;
                 if (name === 'chat') markChatSyncClean(charUuid, remoteTs);
             }
             return result;
@@ -3008,6 +3041,7 @@ createApp({
                 if (activeScopedId && data.scopedMeta && typeof serverSync.getScoped === 'function') {
                     const scopedPull = await pullScopedValuesForCharacter(activeScopedId, { serverMeta, localMeta });
                     scopedPull.acceptedMetaKeys.forEach(key => acceptedScopedMetaKeys.add(key));
+                    Object.assign(_serverSyncRemoteHashes, scopedPull.acceptedHashes || {});
                     if (scopedPull.localNewer) hasLocalNewer = true;
                 }
                 if (data.scopedMeta) {
@@ -3065,7 +3099,8 @@ createApp({
                     if (serverHashes[metaKey]) nextHashMeta[metaKey] = serverHashes[metaKey];
                 });
                 acceptedScopedMetaKeys.forEach(metaKey => {
-                    if (serverHashes[metaKey]) nextHashMeta[metaKey] = serverHashes[metaKey];
+                    const acceptedHash = serverHashes[metaKey] || _serverSyncRemoteHashes[metaKey] || '';
+                    if (acceptedHash) nextHashMeta[metaKey] = acceptedHash;
                 });
                 await setSyncHashMeta(nextHashMeta);
 
