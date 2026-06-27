@@ -157,16 +157,33 @@ router.get('/stats', (req, res) => {
 
   const announcements = db.prepare('SELECT COUNT(*) as c FROM announcements WHERE active = 1').get().c;
 
-  // Daily series (login + new users + downloads) for last N days
-  const days = Math.min(span === Infinity ? 30 : Math.ceil(span / 86400e3), 90);
+  // Daily series (login + new users) — aggregated instead of per-day queries
+  const dayMs = 86400000;
+  const days = Math.min(span === Infinity ? 30 : Math.ceil(span / dayMs), 90);
+  const seriesStart = Math.floor((nowTs - (days - 1) * dayMs) / dayMs) * dayMs;
+  const seriesEndExclusive = Math.floor(nowTs / dayMs) * dayMs + dayMs;
+
+  const newUsersByDay = db.prepare(
+    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS day, COUNT(*) AS c
+     FROM users WHERE created_at >= ? AND created_at < ?
+     GROUP BY day`
+  ).all(dayMs, dayMs, seriesStart, seriesEndExclusive);
+  const loginsByDay = db.prepare(
+    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS day, COUNT(DISTINCT user_id) AS c
+     FROM audit_logs WHERE action = 'login' AND created_at >= ? AND created_at < ?
+     GROUP BY day`
+  ).all(dayMs, dayMs, seriesStart, seriesEndExclusive);
+
+  const newUsersMap = Object.fromEntries(newUsersByDay.map(r => [r.day, r.c]));
+  const loginsMap = Object.fromEntries(loginsByDay.map(r => [r.day, r.c]));
   const series = [];
   for (let i = days - 1; i >= 0; i--) {
-    const dayStart = nowTs - i * 86400e3;
-    const dayStartDay = Math.floor(dayStart / 86400e3) * 86400e3;
-    const dayEnd = dayStartDay + 86400e3;
-    const newU = db.prepare('SELECT COUNT(*) as c FROM users WHERE created_at >= ? AND created_at < ?').get(dayStartDay, dayEnd).c;
-    const logins = db.prepare('SELECT COUNT(DISTINCT user_id) as c FROM audit_logs WHERE action = ? AND created_at >= ? AND created_at < ?').get('login', dayStartDay, dayEnd).c;
-    series.push({ date: dayStartDay, newUsers: newU, logins });
+    const dayStartDay = Math.floor((nowTs - i * dayMs) / dayMs) * dayMs;
+    series.push({
+      date: dayStartDay,
+      newUsers: newUsersMap[dayStartDay] || 0,
+      logins: loginsMap[dayStartDay] || 0,
+    });
   }
 
   res.json({

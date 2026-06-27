@@ -26,6 +26,11 @@ export const config = {
     ? path.resolve(__dirname, '..', process.env.STATIC_DIR)
     : '',
   corsOrigin: process.env.CORS_ORIGIN || '*',
+  // Optional comma-separated host suffixes for proxy targets (empty = allow public hosts only)
+  proxyAllowedHosts: (process.env.PROXY_ALLOWED_HOSTS || '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean),
 };
 
 export const __dirname_export = __dirname;

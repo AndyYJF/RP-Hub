@@ -1,8 +1,11 @@
 import { Router } from 'express';
-import { authOptional } from '../middleware/auth.js';
+import { authRequired } from '../middleware/auth.js';
+import { proxyLimiter } from '../middleware/proxyLimiter.js';
+import { assertSafeProxyUrl } from '../utils/safeUrl.js';
 
 const router = Router();
-router.use(authOptional);
+router.use(authRequired);
+router.use(proxyLimiter);
 
 const normalizeStreamLine = (line) => {
   const trimmed = String(line || '').trim();
@@ -65,9 +68,8 @@ const sendImageValue = async ({ imageValue, targetUrl, token, res }) => {
     return res.send(Buffer.from(trimmed.replace(/\s+/g, ''), 'base64'));
   }
 
-  const imgUrl = /^https?:\/\//i.test(trimmed)
-    ? trimmed
-    : new URL(trimmed, targetUrl).href;
+  const resolved = /^https?:\/\//i.test(trimmed) ? trimmed : new URL(trimmed, targetUrl).href;
+  const imgUrl = assertSafeProxyUrl(resolved);
 
   console.log('[NAI Proxy] downloading image:', imgUrl);
   const imgResp = await fetch(imgUrl, {
@@ -90,21 +92,15 @@ const sendImageValue = async ({ imageValue, targetUrl, token, res }) => {
 };
 
 // POST /api/proxy/nai-generate
-// 代理前端到生图 API 的请求，解决浏览器跨域 CORS 限制
-// 支持两种响应模式：
-//   1. 直接返回图片二进制（标准 NovelAI zip/png）
-//   2. NDJSON 流式：排队 → 生成中 → success + url → 再下载图片
 router.post('/nai-generate', async (req, res, next) => {
   try {
     const { targetUrl, token, body } = req.body || {};
     if (!targetUrl || !token || !body) {
       return res.status(400).json({ error: '缺少 targetUrl / token / body' });
     }
-    if (!/^https?:\/\//i.test(targetUrl)) {
-      return res.status(400).json({ error: '目标 URL 必须是 http/https' });
-    }
+    const safeTargetUrl = assertSafeProxyUrl(targetUrl);
 
-    const upstream = await fetch(targetUrl, {
+    const upstream = await fetch(safeTargetUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -124,7 +120,6 @@ router.post('/nai-generate', async (req, res, next) => {
       });
     }
 
-    // 模式 1：直接返回图片二进制（content-type 是 image/* 或 application/zip 等）
     if (contentType.startsWith('image/') || contentType.includes('octet-stream') || contentType.includes('zip')) {
       const buf = Buffer.from(await upstream.arrayBuffer());
       res.setHeader('Content-Type', contentType);
@@ -132,18 +127,15 @@ router.post('/nai-generate', async (req, res, next) => {
       return res.send(buf);
     }
 
-    // 模式 2：NDJSON 流式 — 读取全部行，找到 success 行里的 url，再下载图片
     const text = await upstream.text();
     const lines = text.split(/\r?\n/)
       .map(normalizeStreamLine)
       .filter(line => line && line !== '[DONE]' && !/^(event|id|retry):/i.test(line));
     let successImageValue = null;
-    let lastStatus = null;
 
     for (const line of lines) {
       try {
         const obj = JSON.parse(line);
-        lastStatus = obj;
         const imageValue = getImageValueFromSuccessPayload(obj);
         if (imageValue) {
           successImageValue = imageValue;
@@ -153,9 +145,8 @@ router.post('/nai-generate', async (req, res, next) => {
     }
 
     if (successImageValue) {
-      return sendImageValue({ imageValue: successImageValue, targetUrl, token, res });
+      return sendImageValue({ imageValue: successImageValue, targetUrl: safeTargetUrl, token, res });
     }
-    // 没有 success，返回最后的 NDJSON 状态（可能是排队/失败）
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(text);

@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import path from 'path';
 import fs from 'fs';
 import { config } from './config.js';
+import { validateProductionConfig } from './utils/validateConfig.js';
 import { errorHandler, notFound } from './middleware/error.js';
 import authRoutes from './routes/auth.js';
 import syncRoutes from './routes/sync.js';
@@ -15,12 +16,32 @@ import proxyRoutes from './routes/proxy.js';
 import chatProxyRoutes from './routes/chatProxy.js';
 import imageCacheRoutes from './routes/imageCache.js';
 
+validateProductionConfig();
+
 const app = express();
 
 // ---------- Security & parsing ----------
-app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+const cspDirectives = {
+  defaultSrc: ["'self'"],
+  scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://cdn.tailwindcss.com', 'https://unpkg.com', 'https://cdn.jsdelivr.net'],
+  styleSrc: ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com'],
+  fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+  imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+  connectSrc: ["'self'", 'https:', 'http:', 'ws:', 'wss:'],
+  frameSrc: ["'self'", 'blob:'],
+  objectSrc: ["'none'"],
+  baseUri: ["'self'"],
+  formAction: ["'self'"],
+};
+
+app.use(helmet({
+  contentSecurityPolicy: process.env.CONTENT_SECURITY_POLICY === 'false'
+    ? false
+    : { directives: cspDirectives },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use(express.json({ limit: '64mb' }));
+app.use(express.urlencoded({ extended: true, limit: '64mb' }));
 
 const origins = config.corsOrigin === '*'
   ? '*'
@@ -29,7 +50,9 @@ app.use(cors({
   origin: origins === '*' ? true : origins,
   credentials: true,
 }));
-app.use(morgan('tiny'));
+if (process.env.NODE_ENV !== 'production') {
+  app.use(morgan('tiny'));
+}
 
 // ---------- Health ----------
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));

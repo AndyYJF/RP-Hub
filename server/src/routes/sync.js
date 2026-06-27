@@ -130,10 +130,11 @@ router.post('/bootstrap-diff', (req, res, next) => {
     const rows = db.prepare(
       'SELECT scope, name, value_hash, updated_at FROM user_data WHERE user_id = ?'
     ).all(req.user.id);
+    const globalValues = db.prepare(
+      'SELECT name, value, value_hash FROM user_data WHERE user_id = ? AND scope = ?'
+    ).all(req.user.id, 'global');
+    const globalValueMap = new Map(globalValues.map(r => [r.name, r]));
     const data = { global: {}, scoped: {}, scopedMeta: {}, updatedAt: {}, hashes: {} };
-    const valueStmt = db.prepare(
-      'SELECT value, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
-    );
     const hashStmt = db.prepare(
       'UPDATE user_data SET value_hash = ? WHERE user_id = ? AND scope = ? AND name = ?'
     );
@@ -146,7 +147,7 @@ router.post('/bootstrap-diff', (req, res, next) => {
         const knownHash = String(knownHashes[metaKey] || '');
         let currentHash = String(r.value_hash || '');
         if (!currentHash && knownHash) {
-          const valueRow = valueStmt.get(req.user.id, r.scope, r.name);
+          const valueRow = globalValueMap.get(r.name);
           currentHash = valueRow?.value_hash || hashSerializedValue(valueRow?.value);
           if (currentHash) hashStmt.run(currentHash, req.user.id, r.scope, r.name);
         }
@@ -155,7 +156,7 @@ router.post('/bootstrap-diff', (req, res, next) => {
           continue;
         }
         if (!knownTs || r.updated_at > knownTs) {
-          const valueRow = valueStmt.get(req.user.id, r.scope, r.name);
+          const valueRow = globalValueMap.get(r.name);
           data.global[r.name] = deserialize(valueRow?.value);
           data.hashes[metaKey] = valueRow?.value_hash || currentHash || hashSerializedValue(valueRow?.value);
         }

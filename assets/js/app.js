@@ -5259,8 +5259,9 @@ ${content}
 
         const renderMarkdown = (text, role = 'assistant', skipRegex = false, renderOptions = {}) => {
             if (!text) return '';
+            const isRestricted = renderOptions?.restricted === true;
             const messageCacheKey = renderOptions?.id || renderOptions?.messageId || '';
-            const cacheKey = `${role}_${skipRegex}_${messageCacheKey}_${text}`;
+            const cacheKey = `${isRestricted ? 'pub_' : ''}${role}_${skipRegex}_${messageCacheKey}_${text}`;
             if (renderMarkdownCache.has(cacheKey)) return renderMarkdownCache.get(cacheKey);
 
             let processed = text;
@@ -5277,6 +5278,22 @@ ${content}
             if (!skipRegex) {
                 processed = replaceNativeNaiImageTokensForDisplay(processed, role, renderOptions);
             }
+
+            // 公共/不可信内容：仅 Markdown + 严格净化，不执行 HTML 卡片 / iframe / script
+            if (isRestricted) {
+                const restrictedConfig = {
+                    ADD_TAGS: ['details', 'summary', 'svg', 'path', 'g', 'circle', 'rect', 'defs', 'linearGradient', 'stop', 'div', 'span', 'style', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'pre', 'code', 'blockquote', 'hr', 'br', 'em', 'strong', 'del', 'sup', 'sub'],
+                    ADD_ATTR: ['style', 'open', 'class', 'id', 'href', 'target', 'rel', 'src', 'alt', 'title', 'viewBox', 'fill', 'stroke', 'stroke-width', 'd', 'stroke-linecap', 'stroke-linejoin', 'x1', 'y1', 'x2', 'y2', 'offset', 'stop-color', 'stop-opacity', 'width', 'height', 'colspan', 'rowspan'],
+                    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+                    FORBID_ATTR: ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus', 'onblur', 'srcdoc', 'formaction'],
+                    FORCE_BODY: true,
+                };
+                const html = DOMPurify.sanitize(marked.parse(processed), restrictedConfig);
+                renderMarkdownCache.set(cacheKey, html);
+                if (renderMarkdownCache.size > 2000) renderMarkdownCache.delete(renderMarkdownCache.keys().next().value);
+                return html;
+            }
+
             const createIframe = (rawHtml) => createExecutableHtmlIframe(rawHtml, 'border-t border-gray-200 shadow-sm');
 
             // Configure DOMPurify
@@ -5462,6 +5479,9 @@ ${content}
             if (renderMarkdownCache.size > 2000) renderMarkdownCache.delete(renderMarkdownCache.keys().next().value);
             return html;
         };
+
+        // 公共库简介、站点公告等不可信内容：Markdown 展示，禁止 HTML 卡片与脚本
+        const renderPublicMarkdown = (text) => renderMarkdown(text, 'assistant', true, { restricted: true });
 
         // API & Models
         const fetchModels = async (isManual = false) => {
@@ -11390,7 +11410,7 @@ image###生成的提示词###
                         continue;
                     }
                     console.error('NAI image gen failed:', e);
-                    el.innerHTML = `<div style="color: #c00; font-size: 13px; padding: 20px;">图片生成失败: ${e.message}</div>`;
+                    el.innerHTML = `<div style="color: #c00; font-size: 13px; padding: 20px;">图片生成失败: ${escapeNaiStatusHtml(e.message)}</div>`;
                 }
             }
         };
@@ -13032,7 +13052,7 @@ image###生成的提示词###
             getCharacterWICount, getCharacterRegexCount,
             handleAvatarUpload, importCharacter, exportCharacter,
             createPreset, editPreset, savePreset, deletePreset, movePreset,
-            renderMarkdown, messageUsesHtmlFrame, messageUsesWideLayout, isMessageSynced, parseCot, formatTimeAgo, closeCharacterEditor: () => showCharacterEditor.value = false,
+            renderMarkdown, renderPublicMarkdown, messageUsesHtmlFrame, messageUsesWideLayout, isMessageSynced, parseCot, formatTimeAgo, closeCharacterEditor: () => showCharacterEditor.value = false,
             openExportModal: (type) => {
                 exportType.value = type;
                 selectedExportIndices.value.clear();

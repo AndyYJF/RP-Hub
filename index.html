@@ -1736,7 +1736,7 @@
                                 <div class="min-h-0 flex-1 overflow-y-auto custom-scrollbar rounded-xl bg-gray-50/55 p-3">
                                     <div v-if="libraryCardDetail.description || (libraryCardDetail.data && libraryCardDetail.data.description)" class="prose prose-sm prose-gray max-w-none">
                                         <div class="text-sm text-gray-700 leading-relaxed font-normal font-sans markdown-body"
-                                            v-html="renderMarkdown(libraryCardDetail.description || (libraryCardDetail.data && libraryCardDetail.data.description) || '', 'assistant', true)">
+                                            v-html="renderPublicMarkdown(libraryCardDetail.description || (libraryCardDetail.data && libraryCardDetail.data.description) || '')">
                                         </div>
                                     </div>
                                     <div v-else class="flex min-h-32 flex-col items-center justify-center text-gray-400 italic text-sm">
@@ -3716,7 +3716,7 @@
                 </div>
                 <div class="p-4 max-h-[60vh] overflow-y-auto custom-scrollbar">
                     <div class="prose prose-sm prose-gray max-w-none">
-                        <div class="markdown-body" v-html="renderMarkdown(siteAnnouncement.content, 'assistant', true)"></div>
+                        <div class="markdown-body" v-html="renderPublicMarkdown(siteAnnouncement.content)"></div>
                     </div>
                     <div class="mt-8 mb-2 flex justify-between items-center">
                         <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
@@ -3802,7 +3802,7 @@
                         </svg>
                     </div>
                     <h3 class="text-lg font-medium text-gray-900 mb-2">确认操作</h3>
-                    <p class="text-sm text-gray-500 whitespace-pre-wrap" v-html="confirmMessage"></p>
+                    <p class="text-sm text-gray-500 whitespace-pre-wrap">{{ confirmMessage }}</p>
                 </div>
                 <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse rounded-b-xl">
                     <button @click="handleConfirm" type="button"
