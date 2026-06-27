@@ -369,13 +369,13 @@
             }
         }
 
-        async pullBootstrapDiff(known = {}) {
+        async pullBootstrapDiff(known = {}, knownHashes = {}) {
             if (!this.isServerMode) return null;
             this._emit(EVENT_SYNC_START, { type: 'bootstrap-diff' });
             try {
                 const data = await this._request('/api/sync/bootstrap-diff', {
                     method: 'POST',
-                    body: JSON.stringify({ known: known || {} }),
+                    body: JSON.stringify({ known: known || {}, knownHashes: knownHashes || {} }),
                 });
                 this.lastSync = Date.now();
                 lsSet(STORAGE_KEYS.lastSync, String(this.lastSync));
@@ -410,6 +410,19 @@
                 body: JSON.stringify({
                     knownIds: Array.isArray(state.knownIds) ? state.knownIds : [],
                     knownHashes: Array.isArray(state.knownHashes) ? state.knownHashes : [],
+                }),
+            });
+        }
+
+        async putScopedChatConditional(id, value, options = {}) {
+            if (!this.isServerMode || !id) return null;
+            return this._request(`/api/sync/scoped/chat/${encodeURIComponent(id)}/conditional`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    value,
+                    baseUpdatedAt: Number(options.baseUpdatedAt || 0),
+                    baseHash: options.baseHash || '',
+                    force: options.force === true,
                 }),
             });
         }

@@ -2587,6 +2587,17 @@ createApp({
         let _serverScopedMetaCache = {};
         let _serverSyncRemoteHashes = {};
         let _serverSyncAcceptedRemoteGlobalData = false;
+        const chatSyncConflict = ref({
+            show: false,
+            resolving: false,
+            characterUuid: '',
+            characterName: '',
+            localMessages: [],
+            remoteMessages: [],
+            localUpdatedAt: 0,
+            remoteUpdatedAt: 0,
+            remoteHash: ''
+        });
 
         const getCurrentChatSyncId = () => currentCharacter.value?.uuid || '';
 
@@ -2622,6 +2633,99 @@ createApp({
                 knownIds: safeMessages.map(message => String(message?.id || '')),
                 knownHashes: safeMessages.map(message => hashSyncValue(message)),
             };
+        };
+
+        const getCharacterNameByUuid = (charUuid) => {
+            const char = characters.value.find(item => item?.uuid === charUuid);
+            return char?.name || '当前角色';
+        };
+
+        const getChatConflictSummary = (messages = []) => {
+            const safeMessages = Array.isArray(messages) ? messages : [];
+            const lastMessage = [...safeMessages].reverse().find(msg => msg && ['user', 'assistant', 'system'].includes(msg.role));
+            const rawText = stripGeneratedImageCacheMarkersFromText(String(lastMessage?.content || ''))
+                .replace(/<[^>]*>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return {
+                count: safeMessages.length,
+                lastRole: lastMessage?.role === 'user' ? '用户' : (lastMessage?.role === 'assistant' ? '角色' : '系统'),
+                preview: rawText ? rawText.slice(0, 90) : '暂无可预览内容'
+            };
+        };
+
+        const applySyncedChatValue = async (charUuid, messages, updatedAt, hash = '') => {
+            const normalized = sanitizeChatHistoryImageData(Array.isArray(messages) ? messages : []).messages
+                .map(stripRuntimeMessageFieldsForStorage);
+            await setScopedStoredValue('chat', charUuid, normalized, { clone: false });
+            if (currentCharacter.value?.uuid === charUuid) {
+                chatHistory.value = prepareLoadedChatHistoryForDisplay(normalized);
+            }
+            const metaKey = `scoped:chat:${charUuid}`;
+            const syncMeta = await getSyncMeta();
+            if (updatedAt) syncMeta[metaKey] = updatedAt;
+            await setSyncMeta(syncMeta);
+            const syncHashMeta = await getSyncHashMeta();
+            const nextHash = hash || hashSyncValue(normalized);
+            if (nextHash) {
+                syncHashMeta[metaKey] = nextHash;
+                _serverSyncRemoteHashes[metaKey] = nextHash;
+            }
+            await setSyncHashMeta(syncHashMeta);
+            if (updatedAt) {
+                _serverScopedMetaCache[metaKey] = updatedAt;
+                markChatSyncClean(charUuid, updatedAt);
+            }
+        };
+
+        const showChatSyncConflict = async (charUuid, localMessages, conflictInfo = {}) => {
+            if (chatSyncConflict.value.show) return;
+            let remoteMessages = [];
+            let remoteUpdatedAt = Number(conflictInfo.remoteUpdatedAt || 0);
+            let remoteHash = conflictInfo.remoteHash || '';
+            try {
+                const remote = await serverSync.getScoped('chat', charUuid);
+                remoteUpdatedAt = Number(remote?.updatedAt || remoteUpdatedAt || 0);
+                remoteMessages = sanitizeChatHistoryImageData(remote?.value || []).messages
+                    .map(stripRuntimeMessageFieldsForStorage);
+                remoteHash = remoteHash || hashSyncValue(remoteMessages);
+            } catch (e) {
+                console.warn('[ServerSync] conflict remote fetch failed:', e?.message || e);
+            }
+            chatSyncConflict.value = {
+                show: true,
+                resolving: false,
+                characterUuid: charUuid,
+                characterName: getCharacterNameByUuid(charUuid),
+                localMessages: sanitizeChatHistoryImageData(localMessages || []).messages
+                    .map(stripRuntimeMessageFieldsForStorage),
+                remoteMessages,
+                localUpdatedAt: Date.now(),
+                remoteUpdatedAt,
+                remoteHash
+            };
+            showToast('检测到聊天同步冲突，请选择要保留的记录', 'warning', 5000);
+        };
+
+        const resolveChatSyncConflict = async (action) => {
+            const conflict = chatSyncConflict.value;
+            if (!conflict.show || conflict.resolving) return;
+            conflict.resolving = true;
+            try {
+                if (action === 'remote') {
+                    await applySyncedChatValue(conflict.characterUuid, conflict.remoteMessages, conflict.remoteUpdatedAt, conflict.remoteHash);
+                    showToast('已使用云端聊天记录', 'success');
+                } else if (action === 'local') {
+                    const result = await serverSync.putScopedChatConditional(conflict.characterUuid, conflict.localMessages, { force: true });
+                    await applySyncedChatValue(conflict.characterUuid, conflict.localMessages, result?.updatedAt || Date.now(), result?.hash || hashSyncValue(conflict.localMessages));
+                    showToast('已上传本地聊天记录并覆盖云端', 'success');
+                }
+                chatSyncConflict.value.show = false;
+            } catch (e) {
+                console.error('[ServerSync] resolve chat conflict failed:', e);
+                showToast('处理聊天冲突失败：' + (e?.message || '未知错误'), 'error', 5000);
+                conflict.resolving = false;
+            }
         };
 
         const pullScopedValuesForCharacter = async (charUuid, options = {}) => {
@@ -2757,6 +2861,17 @@ createApp({
             }
         };
 
+        const buildGlobalSyncHashSnapshot = () => {
+            const hashes = {};
+            const snapshot = buildServerSyncGlobalSnapshot();
+            for (const [key, value] of Object.entries(snapshot)) {
+                if (value === undefined) continue;
+                const hash = hashSyncValue(value);
+                if (hash) hashes[`global:${key}`] = hash;
+            }
+            return hashes;
+        };
+
         const pushServerSyncNow = async () => {
             if (!serverSync || !serverSync.isServerMode) return;
             if (!_serverSyncInitialPulled) {
@@ -2789,7 +2904,9 @@ createApp({
                     global[key] = value;
                 }
             }
-            const scoped = { chat: {}, memories: {} };
+            const scoped = { memories: {} };
+            const chatUploads = {};
+            const chatUploadHashes = {};
             const MAX_SCOPED_SIZE = 45 * 1024 * 1024; // 45MB per scoped entry (后端限制 50MB)
             for (const char of characters.value) {
                 if (!char.uuid) continue;
@@ -2803,8 +2920,11 @@ createApp({
                         }
                         const chatStr = JSON.stringify(chatForSync);
                         if (chatStr.length <= MAX_SCOPED_SIZE) {
-                            if (shouldIncludeSyncValue(`scoped:chat:${char.uuid}`, chatForSync)) {
-                                scoped.chat[char.uuid] = chatForSync;
+                            const chatMetaKey = `scoped:chat:${char.uuid}`;
+                            if (shouldIncludeSyncValue(chatMetaKey, chatForSync)) {
+                                chatUploads[char.uuid] = chatForSync;
+                                chatUploadHashes[chatMetaKey] = hashSyncValue(chatForSync);
+                                delete pendingSyncHashes[chatMetaKey];
                             }
                         } else {
                             // 聊天记录仍然太大，跳过同步，只存本地
@@ -2819,14 +2939,13 @@ createApp({
                     }
                 } catch (_) {}
             }
-            if (!Object.keys(global).length && !Object.keys(scoped.chat).length && !Object.keys(scoped.memories).length) {
+            if (!Object.keys(global).length && !Object.keys(chatUploads).length && !Object.keys(scoped.memories).length) {
                 await setSyncHashMeta(nextSyncHashMeta);
                 return;
             }
-            const syncedChatIds = Object.keys(scoped.chat);
-            const result = await serverSync.bulkSync({ global, scoped });
+            const hasBulkPayload = Object.keys(global).length || Object.keys(scoped.memories).length;
+            const result = hasBulkPayload ? await serverSync.bulkSync({ global, scoped }) : null;
             const syncedAt = result?.updatedAt || Date.now();
-            syncedChatIds.forEach(id => markChatSyncClean(id, syncedAt));
             // Record local sync meta with server-returned timestamps so next pull can diff
             if (result && result.updatedAt) {
                 const meta = await getSyncMeta();
@@ -2837,6 +2956,36 @@ createApp({
                         meta[`scoped:${name}:${id}`] = now;
                     }
                 }
+                await setSyncMeta(meta);
+            }
+            const chatMetaUpdates = {};
+            for (const [charUuid, chatForSync] of Object.entries(chatUploads)) {
+                const metaKey = `scoped:chat:${charUuid}`;
+                try {
+                    const chatResult = typeof serverSync.putScopedChatConditional === 'function'
+                        ? await serverSync.putScopedChatConditional(charUuid, chatForSync, {
+                            baseUpdatedAt: Number(localMeta[metaKey] || 0),
+                            baseHash: syncHashMeta[metaKey] || _serverSyncRemoteHashes[metaKey] || ''
+                        })
+                        : await serverSync.putScoped('chat', charUuid, chatForSync);
+                    const chatSyncedAt = chatResult?.updatedAt || Date.now();
+                    const chatHash = chatResult?.hash || chatUploadHashes[metaKey] || hashSyncValue(chatForSync);
+                    chatMetaUpdates[metaKey] = chatSyncedAt;
+                    nextSyncHashMeta[metaKey] = chatHash;
+                    _serverSyncRemoteHashes[metaKey] = chatHash;
+                    _serverScopedMetaCache[metaKey] = chatSyncedAt;
+                    markChatSyncClean(charUuid, chatSyncedAt);
+                } catch (e) {
+                    if (e?.status === 409 || e?.body?.conflict) {
+                        showChatSyncConflict(charUuid, chatForSync, e.body || {});
+                        continue;
+                    }
+                    throw e;
+                }
+            }
+            if (Object.keys(chatMetaUpdates).length) {
+                const meta = await getSyncMeta();
+                Object.assign(meta, chatMetaUpdates);
                 await setSyncMeta(meta);
             }
             Object.entries(pendingSyncHashes).forEach(([metaKey, hash]) => {
@@ -2913,8 +3062,9 @@ createApp({
             let acceptedRemoteGlobalData = false;
             try {
                 const localMeta = await getSyncMeta();
+                const knownGlobalHashes = buildGlobalSyncHashSnapshot();
                 const data = typeof serverSync.pullBootstrapDiff === 'function'
-                    ? await serverSync.pullBootstrapDiff(localMeta)
+                    ? await serverSync.pullBootstrapDiff(localMeta, knownGlobalHashes)
                     : typeof serverSync.pullBootstrap === 'function'
                     ? await serverSync.pullBootstrap()
                     : await serverSync.pullAll();
@@ -12713,6 +12863,7 @@ image###生成的提示词###
             showUpdateModal, updateCountdown, latestUpdate, closeUpdateModal, isUpdateScrolledToBottom, checkUpdateScroll, // Update Modal
             showAnnouncementModal, siteAnnouncement, dontShowAnnouncementAgain, closeAnnouncementModal, formatAnnouncementTime, // 站点公告
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
+            chatSyncConflict, resolveChatSyncConflict, getChatConflictSummary,
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, activeToolInlineStatusText, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationToolCallId, activeToolContinuationHasResponse, activeNativeReasoning, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, availableModels, filteredModels, filteredCharacters,
             isInitialServerSyncing, initialServerSyncText,
             user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOption, customApiProviderOptions, showApiProviderSelector, selectApiProvider, imageGenProviderOptions, customImageGenProviderOptions, selectedImageGenProvider, isCustomImageGenProvider, showImageGenProviderSelector, selectImageGenProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,

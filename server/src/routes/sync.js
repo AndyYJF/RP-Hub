@@ -126,6 +126,7 @@ router.get('/bootstrap', (req, res, next) => {
 router.post('/bootstrap-diff', (req, res, next) => {
   try {
     const known = req.body?.known && typeof req.body.known === 'object' ? req.body.known : {};
+    const knownHashes = req.body?.knownHashes && typeof req.body.knownHashes === 'object' ? req.body.knownHashes : {};
     const rows = db.prepare(
       'SELECT scope, name, value_hash, updated_at FROM user_data WHERE user_id = ?'
     ).all(req.user.id);
@@ -133,16 +134,30 @@ router.post('/bootstrap-diff', (req, res, next) => {
     const valueStmt = db.prepare(
       'SELECT value, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
     );
+    const hashStmt = db.prepare(
+      'UPDATE user_data SET value_hash = ? WHERE user_id = ? AND scope = ? AND name = ?'
+    );
     for (const r of rows) {
       const metaKey = `${r.scope}:${r.name}`;
       data.updatedAt[metaKey] = r.updated_at;
       if (r.value_hash) data.hashes[metaKey] = r.value_hash;
       if (r.scope === 'global') {
         const knownTs = Number(known[metaKey] || 0);
+        const knownHash = String(knownHashes[metaKey] || '');
+        let currentHash = String(r.value_hash || '');
+        if (!currentHash && knownHash) {
+          const valueRow = valueStmt.get(req.user.id, r.scope, r.name);
+          currentHash = valueRow?.value_hash || hashSerializedValue(valueRow?.value);
+          if (currentHash) hashStmt.run(currentHash, req.user.id, r.scope, r.name);
+        }
+        if (currentHash) data.hashes[metaKey] = currentHash;
+        if (knownHash && currentHash && knownHash === currentHash) {
+          continue;
+        }
         if (!knownTs || r.updated_at > knownTs) {
           const valueRow = valueStmt.get(req.user.id, r.scope, r.name);
           data.global[r.name] = deserialize(valueRow?.value);
-          data.hashes[metaKey] = valueRow?.value_hash || hashSerializedValue(valueRow?.value);
+          data.hashes[metaKey] = valueRow?.value_hash || currentHash || hashSerializedValue(valueRow?.value);
         }
       } else {
         const [name, id] = r.name.split(':');
@@ -243,6 +258,47 @@ router.post('/scoped/chat/:id/diff', (req, res, next) => {
       updatedAt: row.updated_at,
       hash: valueHash,
     });
+  } catch (e) { next(e); }
+});
+
+// ---------- PUT /sync/scoped/chat/:id/conditional : safe chat overwrite ----------
+router.put('/scoped/chat/:id/conditional', (req, res, next) => {
+  try {
+    const id = req.params.id;
+    checkKey('chat', true);
+    const scopedName = `chat:${id}`;
+    const value = req.body?.value;
+    const force = req.body?.force === true;
+    const baseUpdatedAt = Number(req.body?.baseUpdatedAt || 0);
+    const baseHash = String(req.body?.baseHash || '');
+    const current = db.prepare(
+      'SELECT updated_at, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
+    ).get(req.user.id, 'scoped', scopedName);
+
+    if (!force) {
+      const currentUpdatedAt = Number(current?.updated_at || 0);
+      const currentHash = String(current?.value_hash || '');
+      const sameBase = current
+        ? currentUpdatedAt === baseUpdatedAt && (!baseHash || !currentHash || currentHash === baseHash)
+        : !baseUpdatedAt;
+      if (!sameBase) {
+        return res.status(409).json({
+          error: 'CHAT_SYNC_CONFLICT',
+          conflict: true,
+          remoteUpdatedAt: currentUpdatedAt,
+          remoteHash: currentHash,
+        });
+      }
+    }
+
+    const { serialized, valueHash } = makeStoredValue(value);
+    checkSize(serialized);
+    const updatedAt = now();
+    db.prepare(
+      `INSERT INTO user_data (user_id, scope, name, value, value_hash, updated_at) VALUES (?, 'scoped', ?, ?, ?, ?)
+       ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, value_hash = excluded.value_hash, updated_at = excluded.updated_at`
+    ).run(req.user.id, scopedName, serialized, valueHash, updatedAt);
+    res.json({ ok: true, updatedAt, hash: valueHash });
   } catch (e) { next(e); }
 });
 

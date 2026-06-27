@@ -5197,6 +5197,59 @@
             </div>
         </transition>
 
+        <!-- Chat Sync Conflict Modal -->
+        <transition enter-active-class="transition duration-300 ease-modal-fade" enter-from-class="opacity-0"
+            enter-to-class="opacity-100" leave-active-class="transition duration-200 ease-in"
+            leave-from-class="opacity-100" leave-to-class="opacity-0">
+            <div v-if="chatSyncConflict.show"
+                class="fixed inset-0 z-[190] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                <div class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-2xl overflow-hidden">
+                    <div class="p-5 border-b border-gray-100">
+                        <div class="flex items-start gap-3">
+                            <div class="w-10 h-10 rounded-full bg-amber-50 border border-amber-100 flex items-center justify-center shrink-0">
+                                <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M12 9v3.75m0 3.75h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="min-w-0">
+                                <h3 class="text-lg font-bold text-gray-900">聊天同步冲突</h3>
+                                <p class="text-sm text-gray-500 mt-1">「{{ chatSyncConflict.characterName }}」在本地和云端都有新的聊天记录，请选择保留哪一份。</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div class="border border-gray-200 rounded-xl p-4 bg-gray-50/60">
+                            <div class="flex items-center justify-between mb-3">
+                                <h4 class="text-sm font-bold text-gray-800">云端记录</h4>
+                                <span class="text-xs text-gray-400">{{ getChatConflictSummary(chatSyncConflict.remoteMessages).count }} 条</span>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-1">最后消息：{{ getChatConflictSummary(chatSyncConflict.remoteMessages).lastRole }}</p>
+                            <p class="text-sm text-gray-700 leading-relaxed line-clamp-4">{{ getChatConflictSummary(chatSyncConflict.remoteMessages).preview }}</p>
+                        </div>
+                        <div class="border border-gray-200 rounded-xl p-4 bg-gray-50/60">
+                            <div class="flex items-center justify-between mb-3">
+                                <h4 class="text-sm font-bold text-gray-800">本地记录</h4>
+                                <span class="text-xs text-gray-400">{{ getChatConflictSummary(chatSyncConflict.localMessages).count }} 条</span>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-1">最后消息：{{ getChatConflictSummary(chatSyncConflict.localMessages).lastRole }}</p>
+                            <p class="text-sm text-gray-700 leading-relaxed line-clamp-4">{{ getChatConflictSummary(chatSyncConflict.localMessages).preview }}</p>
+                        </div>
+                    </div>
+                    <div class="px-5 py-4 bg-gray-50 border-t border-gray-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                        <button @click="resolveChatSyncConflict('remote')" :disabled="chatSyncConflict.resolving"
+                            class="px-4 py-2 rounded-xl border border-gray-200 bg-white text-gray-700 text-sm font-bold hover:bg-gray-100 disabled:opacity-50 transition-colors">
+                            使用云端，覆盖本地
+                        </button>
+                        <button @click="resolveChatSyncConflict('local')" :disabled="chatSyncConflict.resolving"
+                            class="px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-bold hover:bg-primary-500 disabled:opacity-50 shadow-sm transition-colors">
+                            使用本地，覆盖云端
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </transition>
+
         <!-- Theme-compliant Global Confirm Modal -->
         <transition enter-active-class="transition duration-300 ease-modal-fade" enter-from-class="opacity-0"
             enter-to-class="opacity-100" leave-active-class="transition duration-200 ease-in"
