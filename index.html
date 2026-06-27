@@ -469,7 +469,7 @@
                             <div class="min-h-0 flex-1 overflow-y-auto custom-scrollbar rounded-xl bg-gray-50/55 p-3">
                                 <div v-if="currentCharacter.description" class="prose prose-sm prose-gray max-w-none">
                                     <div class="text-sm text-gray-700 leading-relaxed font-normal font-sans markdown-body"
-                                        v-html="renderMarkdown(currentCharacter.description, 'assistant', true)">
+                                        v-html="renderPublicMarkdown(currentCharacter.description)">
                                     </div>
                                 </div>
                                 <div v-else

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authRequired } from '../middleware/auth.js';
 import { proxyLimiter } from '../middleware/proxyLimiter.js';
-import { assertSafeProxyUrl } from '../utils/safeUrl.js';
+import { assertSafeProxyUrl, safeProxyFetch } from '../utils/safeUrl.js';
 
 const router = Router();
 router.use(authRequired);
@@ -72,7 +72,7 @@ const sendImageValue = async ({ imageValue, targetUrl, token, res }) => {
   const imgUrl = assertSafeProxyUrl(resolved);
 
   console.log('[NAI Proxy] downloading image:', imgUrl);
-  const imgResp = await fetch(imgUrl, {
+  const imgResp = await safeProxyFetch(imgUrl, {
     headers: { 'Authorization': `Bearer ${token}` },
   });
 
@@ -100,7 +100,7 @@ router.post('/nai-generate', async (req, res, next) => {
     }
     const safeTargetUrl = assertSafeProxyUrl(targetUrl);
 
-    const upstream = await fetch(safeTargetUrl, {
+    const upstream = await safeProxyFetch(safeTargetUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,

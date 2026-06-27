@@ -4032,7 +4032,22 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             return output;
         };
 
-        const htmlIframeSandbox = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-same-origin allow-downloads allow-pointer-lock allow-presentation allow-top-navigation-by-user-activation';
+        const htmlIframeSandbox = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation allow-top-navigation-by-user-activation';
+
+        if (!window.__rphubHtmlFrameResizeListener) {
+            window.__rphubHtmlFrameResizeListener = true;
+            window.addEventListener('message', (event) => {
+                const data = event.data || {};
+                if (!data || data.type !== 'rphub-html-frame-height') return;
+                const height = Math.min(4000, Math.max(40, Number(data.height || 0)));
+                if (!height) return;
+                document.querySelectorAll('iframe.executable-html-frame').forEach(frame => {
+                    if (frame.contentWindow === event.source) {
+                        frame.style.height = height + 'px';
+                    }
+                });
+            });
+        }
 
         const buildExecutableHtmlDocument = (rawHtml) => {
             const metaViewport = '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">';
@@ -4049,8 +4064,20 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
 
                     let lastHeight = 0;
                     let isUpdating = false;
+                    function setFrameHeight(height) {
+                        try {
+                            if (window.parent) {
+                                window.parent.postMessage({ type: 'rphub-html-frame-height', height: height }, '*');
+                            }
+                        } catch (e) {}
+                        try {
+                            if (window.frameElement) {
+                                window.frameElement.style.height = height + 'px';
+                            }
+                        } catch (e) {}
+                    }
                     function updateHeight() {
-                        if (!window.frameElement || isUpdating) return;
+                        if (isUpdating) return;
                         isUpdating = true;
                         requestAnimationFrame(function() {
                             var body = document.body;
@@ -4074,7 +4101,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                             var newHeight = Math.max(maxBottom + marginBottom, body.scrollHeight) + 4;
                             if (Math.abs(newHeight - lastHeight) > 0) {
                                 lastHeight = newHeight;
-                                window.frameElement.style.height = newHeight + 'px';
+                                setFrameHeight(newHeight);
                             }
                             isUpdating = false;
                         });
@@ -5282,10 +5309,10 @@ ${content}
             // 公共/不可信内容：仅 Markdown + 严格净化，不执行 HTML 卡片 / iframe / script
             if (isRestricted) {
                 const restrictedConfig = {
-                    ADD_TAGS: ['details', 'summary', 'svg', 'path', 'g', 'circle', 'rect', 'defs', 'linearGradient', 'stop', 'div', 'span', 'style', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'pre', 'code', 'blockquote', 'hr', 'br', 'em', 'strong', 'del', 'sup', 'sub'],
-                    ADD_ATTR: ['style', 'open', 'class', 'id', 'href', 'target', 'rel', 'src', 'alt', 'title', 'viewBox', 'fill', 'stroke', 'stroke-width', 'd', 'stroke-linecap', 'stroke-linejoin', 'x1', 'y1', 'x2', 'y2', 'offset', 'stop-color', 'stop-opacity', 'width', 'height', 'colspan', 'rowspan'],
-                    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-                    FORBID_ATTR: ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus', 'onblur', 'srcdoc', 'formaction'],
+                    ADD_TAGS: ['details', 'summary', 'svg', 'path', 'g', 'circle', 'rect', 'defs', 'linearGradient', 'stop', 'div', 'span', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'pre', 'code', 'blockquote', 'hr', 'br', 'em', 'strong', 'del', 'sup', 'sub'],
+                    ADD_ATTR: ['open', 'class', 'id', 'href', 'target', 'rel', 'src', 'alt', 'title', 'viewBox', 'fill', 'stroke', 'stroke-width', 'd', 'stroke-linecap', 'stroke-linejoin', 'x1', 'y1', 'x2', 'y2', 'offset', 'stop-color', 'stop-opacity', 'width', 'height', 'colspan', 'rowspan'],
+                    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+                    FORBID_ATTR: ['style', 'onclick', 'onload', 'onerror', 'onmouseover', 'onfocus', 'onblur', 'srcdoc', 'formaction'],
                     FORCE_BODY: true,
                 };
                 const html = DOMPurify.sanitize(marked.parse(processed), restrictedConfig);

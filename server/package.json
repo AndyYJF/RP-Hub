@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node -e \"process.env.NODE_ENV='production'; import('./src/index.js')\"",
     "dev": "node --watch src/index.js",
     "init-admin": "node src/scripts/init-admin.js"
   },

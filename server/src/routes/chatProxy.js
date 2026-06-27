@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authRequired } from '../middleware/auth.js';
 import { proxyLimiter } from '../middleware/proxyLimiter.js';
 import { db, now } from '../db.js';
-import { assertSafeProxyUrl } from '../utils/safeUrl.js';
+import { assertSafeProxyUrl, safeProxyFetch } from '../utils/safeUrl.js';
 import { assertApiQuota } from '../utils/proxyQuota.js';
 
 const router = Router();
@@ -22,7 +22,7 @@ router.post('/chat', async (req, res, next) => {
     const safeTargetUrl = assertSafeProxyUrl(targetUrl);
 
     const userId = req.user.id;
-    const upstream = await fetch(safeTargetUrl, {
+    const upstream = await safeProxyFetch(safeTargetUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
