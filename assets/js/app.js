@@ -961,6 +961,36 @@ createApp({
         };
         normalizeImageGenProviderSettings();
 
+        async function markGlobalSyncDirty(key, value) {
+            if (!serverSync?.isServerMode || _serverSyncSuppressPush) return;
+            try {
+                const metaKey = `global:${key}`;
+                const meta = await getSyncMeta();
+                meta[metaKey] = Date.now();
+                await setSyncMeta(meta);
+                const localHash = hashSyncValue(value);
+                if (localHash) {
+                    delete _serverSyncRemoteHashes[metaKey];
+                }
+            } catch (e) {
+                console.warn('[ServerSync] mark global dirty failed:', key, e?.message || e);
+            }
+        }
+
+        async function persistSettingsChangeNow() {
+            if (!_initComplete || _serverSyncPulling) return;
+            try {
+                if (!db) await initDB();
+                settings.contextSize = MAX_CONTEXT_SIZE;
+                normalizeActiveToolAggressivenessSettings();
+                await setStoredValue('settings', settings);
+                await markGlobalSyncDirty('settings', settings);
+            } catch (e) {
+                console.error('Save settings failed:', e);
+            }
+            scheduleServerSyncPush();
+        }
+
         watch(() => settings.apiKey, (newKey) => {
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
@@ -969,14 +999,14 @@ createApp({
             if (settings.apiProviderKeys[providerId] !== (newKey || '')) {
                 settings.apiProviderKeys[providerId] = newKey || '';
             }
-            if (_initComplete) scheduleServerSyncPush();
+            if (_initComplete) persistSettingsChangeNow();
         });
 
         watch(() => settings.apiUrl, (newUrl) => {
             if (isCustomApiProviderId(settings.apiProviderId)) {
                 settings[getCustomApiUrlKey(settings.apiProviderId)] = newUrl || '';
             }
-            if (_initComplete) scheduleServerSyncPush();
+            if (_initComplete) persistSettingsChangeNow();
         });
 
         const syncSettingsToGenerator = () => {
@@ -1018,6 +1048,7 @@ createApp({
             }
 
             syncSettingsToGenerator();
+            if (_initComplete) persistSettingsChangeNow();
         }, { deep: true });
 
         // Watch image gen and model settings for sync
@@ -3080,9 +3111,21 @@ createApp({
                 const g = data.global || {};
 
                 // ---- Helper: decide for a global key whether to take remote, keep local, or no-change ----
+                const isGlobalLocallyDirty = (key) => {
+                    const metaKey = `global:${key}`;
+                    const localHash = knownGlobalHashes[metaKey] || '';
+                    if (!localHash) return false;
+                    const lastSyncedHash = localHashMeta[metaKey] || '';
+                    const serverHash = serverHashes[metaKey] || '';
+                    return localHash !== lastSyncedHash && localHash !== serverHash;
+                };
                 const decide = (key) => {
                     const sTs = serverMeta[`global:${key}`] || 0;
                     const lTs = localMeta[`global:${key}`] || 0;
+                    if (isGlobalLocallyDirty(key)) {
+                        hasLocalNewer = true;
+                        return 'local';
+                    }
                     // remote has, local doesn't -> take remote
                     if (sTs && !lTs) return 'remote';
                     // local has, remote doesn't -> keep local (push later)
