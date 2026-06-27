@@ -1,5 +1,7 @@
 ﻿const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
+const { onUpdated } = Vue;
+
 // Configure marked to disable indented code blocks
 // This allows indented HTML (like details/summary) to be rendered as HTML instead of code
 marked.use({
@@ -4325,6 +4327,14 @@ ${content}
                 index: startIndex + offset
             }));
         });
+
+        const displayedChatImageTokenSignature = computed(() => displayedChatMessages.value.map(({ msg }) => {
+            const content = String(msg?.content || '');
+            const id = String(msg?.id || '');
+            if (!content.includes('image###') && !content.includes('image-cache###')) return `${id}:`;
+            const matches = content.match(GENERATED_IMAGE_CACHE_TOKEN_REGEX) || [];
+            return `${id}:${matches.join('|')}`;
+        }).join('\n'));
 
         const getChatScrollAnchor = () => {
             const container = chatContainer.value;
@@ -10831,18 +10841,30 @@ image###生成的提示词###
             });
         };
 
+        const isNaiImageElementRendered = (el) => {
+            const img = el?.querySelector?.('img[src]');
+            return !!(img && String(img.getAttribute('src') || '').trim());
+        };
+
         const renderNaiImageElement = (el, imageUrl, options = {}) => {
+            if (!el || !imageUrl) return false;
             const safeImageUrl = escapeHtmlAttribute(imageUrl);
             el.innerHTML = `<img src="${safeImageUrl}" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;">${options.serverSynced ? renderNaiImageSyncBadge() : ''}`;
             el.style.background = 'rgba(255,255,255,0.32)';
             el.style.minHeight = '';
             el.style.minWidth = '';
             el.style.position = 'relative';
+            el.setAttribute('data-loaded', '1');
+            el.setAttribute('data-done', '1');
+            el.removeAttribute('data-cache-loading');
+            el.removeAttribute('data-missing-cache');
+            el.removeAttribute('data-retry-count');
             if (options.serverSynced) {
                 el.setAttribute('data-server-synced', '1');
             } else {
                 el.removeAttribute('data-server-synced');
             }
+            return isNaiImageElementRendered(el);
         };
 
         const createNaiMissingCacheHtml = (hasPromptMeta) => {
@@ -10858,6 +10880,7 @@ image###生成的提示词###
 
         const setNaiMissingCacheState = (el) => {
             const tags = el.getAttribute('data-tags') || '';
+            el.removeAttribute('data-cache-loading');
             el.innerHTML = createNaiMissingCacheHtml(!!tags);
             el.setAttribute('data-missing-cache', '1');
         };
@@ -10889,6 +10912,7 @@ image###生成的提示词###
             el.classList.remove('nai-cached-image');
             el.classList.add('nai-pending-image');
             el.removeAttribute('data-loaded');
+            el.removeAttribute('data-cache-loading');
             el.removeAttribute('data-missing-cache');
             el.removeAttribute('data-done');
             el.removeAttribute('data-retry-count');
@@ -10913,12 +10937,37 @@ image###生成的提示词###
             regenerateCachedNaiImage(el);
         };
 
+        let naiImageProcessTimer = null;
+        let naiImageProcessPending = false;
+        const scheduleNaiImageProcessing = (delay = 200, options = {}) => {
+            naiImageProcessPending = naiImageProcessPending || options.pending !== false;
+            if (naiImageProcessTimer) clearTimeout(naiImageProcessTimer);
+            naiImageProcessTimer = window.setTimeout(() => {
+                naiImageProcessTimer = null;
+                const shouldProcessPending = naiImageProcessPending;
+                naiImageProcessPending = false;
+                processCachedNaiImages();
+                if (shouldProcessPending && settings.imageGenProtocol === 'novelai_native') {
+                    processPendingNaiImages();
+                }
+            }, delay);
+        };
+
         const processCachedNaiImages = async () => {
-            const placeholders = document.querySelectorAll('.nai-cached-image:not([data-loaded])');
+            const placeholders = Array.from(document.querySelectorAll('.nai-cached-image')).filter(el => (
+                !isNaiImageElementRendered(el)
+                && el.getAttribute('data-cache-loading') !== '1'
+                && el.getAttribute('data-missing-cache') !== '1'
+            ));
             if (!placeholders.length) return;
             for (const el of placeholders) {
-                el.setAttribute('data-loaded', '1');
                 const cacheKey = el.getAttribute('data-cache-key') || '';
+                if (!cacheKey) {
+                    setNaiMissingCacheState(el);
+                    continue;
+                }
+                el.setAttribute('data-cache-loading', '1');
+                el.removeAttribute('data-loaded');
                 try {
                     const cacheMeta = {
                         tags: el.getAttribute('data-tags') || '',
@@ -10935,19 +10984,19 @@ image###生成的提示词###
                             window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
                         }
                         renderNaiImageElement(el, URL.createObjectURL(cached.blob), { serverSynced: !!cached.serverUploadedAt });
-                        el.setAttribute('data-done', '1');
                     } else if (cached?.url) {
                         if (!cached.serverUploadedAt) {
                             window.setTimeout(() => uploadGeneratedImageCacheToServer(cacheKey, cached), 0);
                         }
                         renderNaiImageElement(el, cached.url, { serverSynced: !!cached.serverUploadedAt });
-                        el.setAttribute('data-done', '1');
                     } else {
                         setNaiMissingCacheState(el);
                     }
                 } catch (e) {
                     console.warn('Failed to load cached NAI image:', e);
                     setNaiMissingCacheState(el);
+                } finally {
+                    el.removeAttribute('data-cache-loading');
                 }
             }
         };
@@ -10967,6 +11016,7 @@ image###生成的提示词###
             const useNaiProxy = sync?.isLoggedIn && typeof sync.proxyNaiGenerate === 'function';
 
             for (const el of placeholders) {
+                if (el.getAttribute('data-done') === '1' || isNaiImageElementRendered(el)) continue;
                 el.setAttribute('data-loaded', '1'); // mark as processing
                 const tags = el.getAttribute('data-tags') || '';
                 const artists = el.getAttribute('data-artists') || '';
@@ -11022,6 +11072,7 @@ image###生成的提示词###
                     renderNaiImageElement(el, imgUrl);
                     el.setAttribute('data-done', '1'); // 标记为已完成，防止刷新后重复生图
                     await markNaiImageDirectiveGenerated(el);
+                    scheduleNaiImageProcessing(80, { pending: false });
                 } catch (e) {
                     if (e?.isPendingImageResponse) {
                         const retryCount = Number.parseInt(el.getAttribute('data-retry-count') || '0', 10) || 0;
@@ -11049,11 +11100,18 @@ image###生成的提示词###
         // After messages render, process pending NAI images
         watch(displayedChatMessages, () => {
             nextTick(() => {
-                setTimeout(() => {
-                    processCachedNaiImages();
-                    if (settings.imageGenProtocol === 'novelai_native') processPendingNaiImages();
-                }, 200);
+                scheduleNaiImageProcessing(200);
             });
+        });
+
+        watch(displayedChatImageTokenSignature, () => {
+            nextTick(() => {
+                scheduleNaiImageProcessing(120);
+            });
+        });
+
+        onUpdated(() => {
+            scheduleNaiImageProcessing(120, { pending: false });
         });
 
         watch(() => settings.imageGenKey, () => {
