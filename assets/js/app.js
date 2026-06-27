@@ -2585,6 +2585,7 @@ createApp({
         let _serverSyncSuppressPush = false;
         let _serverSyncInitialPulled = false;
         let _serverScopedMetaCache = {};
+        let _serverSyncRemoteHashes = {};
         let _serverSyncAcceptedRemoteGlobalData = false;
 
         const getCurrentChatSyncId = () => currentCharacter.value?.uuid || '';
@@ -2686,14 +2687,9 @@ createApp({
             }, 1500);
         };
 
-        const pushServerSyncNow = async () => {
-            if (!serverSync || !serverSync.isServerMode) return;
-            if (!_serverSyncInitialPulled) {
-                console.warn('[ServerSync] push skipped before initial pull');
-                return;
-            }
+        const buildServerSyncGlobalSnapshot = () => {
             const activeRef = getCurrentActiveCharacterReference();
-            const global = {
+            return {
                 characters: characters.value,
                 settings: settings,
                 presets: presets.value,
@@ -2711,6 +2707,55 @@ createApp({
                 last_active_char_uuid: activeRef?.uuid || (typeof lastActiveCharacterId.value === 'string' ? lastActiveCharacterId.value : null),
                 memory_settings: memorySettings,
             };
+        };
+
+        const hashSyncValue = (value) => {
+            try {
+                const plainValue = cloneForStorage(value);
+                const serialized = plainValue === undefined || plainValue === null
+                    ? ''
+                    : typeof plainValue === 'string'
+                        ? plainValue
+                        : JSON.stringify(plainValue);
+                return hashTextForKey(serialized || '');
+            } catch (e) {
+                console.warn('[ServerSync] hash failed:', e?.message || e);
+                return '';
+            }
+        };
+
+        const pushServerSyncNow = async () => {
+            if (!serverSync || !serverSync.isServerMode) return;
+            if (!_serverSyncInitialPulled) {
+                console.warn('[ServerSync] push skipped before initial pull');
+                return;
+            }
+            const localMeta = await getSyncMeta();
+            const syncHashMeta = await getSyncHashMeta();
+            const nextSyncHashMeta = { ...syncHashMeta };
+            const pendingSyncHashes = {};
+            const shouldIncludeSyncValue = (metaKey, value) => {
+                const localHash = hashSyncValue(value);
+                if (localHash && syncHashMeta[metaKey] === localHash) return false;
+                const serverHash = _serverSyncRemoteHashes[metaKey] || '';
+                const localTs = Number(localMeta[metaKey] || 0);
+                const serverTs = Number(_serverScopedMetaCache[metaKey] || 0);
+                if (localHash && serverHash === localHash && (!serverTs || localTs >= serverTs)) {
+                    nextSyncHashMeta[metaKey] = localHash;
+                    return false;
+                }
+                if (localHash) pendingSyncHashes[metaKey] = localHash;
+                return true;
+            };
+
+            const globalSnapshot = buildServerSyncGlobalSnapshot();
+            const global = {};
+            for (const [key, value] of Object.entries(globalSnapshot)) {
+                if (value === undefined) continue;
+                if (shouldIncludeSyncValue(`global:${key}`, value)) {
+                    global[key] = value;
+                }
+            }
             const scoped = { chat: {}, memories: {} };
             const MAX_SCOPED_SIZE = 45 * 1024 * 1024; // 45MB per scoped entry (后端限制 50MB)
             for (const char of characters.value) {
@@ -2725,7 +2770,9 @@ createApp({
                         }
                         const chatStr = JSON.stringify(chatForSync);
                         if (chatStr.length <= MAX_SCOPED_SIZE) {
-                            scoped.chat[char.uuid] = chatForSync;
+                            if (shouldIncludeSyncValue(`scoped:chat:${char.uuid}`, chatForSync)) {
+                                scoped.chat[char.uuid] = chatForSync;
+                            }
                         } else {
                             // 聊天记录仍然太大，跳过同步，只存本地
                             console.warn('[ServerSync] chat history for', char.uuid, 'too large (' + Math.round(chatStr.length/1024/1024) + 'MB), skipping sync');
@@ -2734,8 +2781,14 @@ createApp({
                 } catch (_) {}
                 try {
                     const mem = await getScopedStoredValue('memories', char.uuid);
-                    if (mem !== undefined) scoped.memories[char.uuid] = mem;
+                    if (mem !== undefined && shouldIncludeSyncValue(`scoped:memories:${char.uuid}`, mem)) {
+                        scoped.memories[char.uuid] = mem;
+                    }
                 } catch (_) {}
+            }
+            if (!Object.keys(global).length && !Object.keys(scoped.chat).length && !Object.keys(scoped.memories).length) {
+                await setSyncHashMeta(nextSyncHashMeta);
+                return;
             }
             const syncedChatIds = Object.keys(scoped.chat);
             const result = await serverSync.bulkSync({ global, scoped });
@@ -2753,10 +2806,16 @@ createApp({
                 }
                 await setSyncMeta(meta);
             }
+            Object.entries(pendingSyncHashes).forEach(([metaKey, hash]) => {
+                nextSyncHashMeta[metaKey] = hash;
+                _serverSyncRemoteHashes[metaKey] = hash;
+            });
+            await setSyncHashMeta(nextSyncHashMeta);
         };
 
         // ---------- Sync meta: local record of each key's last-synced updatedAt ----------
         const SYNC_META_KEY = '_sync_meta';
+        const SYNC_HASH_META_KEY = '_sync_hash_meta';
         const getSyncMeta = async () => {
             try {
                 if (!db) await initDB();
@@ -2768,6 +2827,19 @@ createApp({
             try {
                 if (!db) await initDB();
                 await setStoredValue(SYNC_META_KEY, meta);
+            } catch (_) {}
+        };
+        const getSyncHashMeta = async () => {
+            try {
+                if (!db) await initDB();
+                const v = await getStoredValue(SYNC_HASH_META_KEY);
+                return (v && typeof v === 'object') ? v : {};
+            } catch (_) { return {}; }
+        };
+        const setSyncHashMeta = async (meta) => {
+            try {
+                if (!db) await initDB();
+                await setStoredValue(SYNC_HASH_META_KEY, meta);
             } catch (_) {}
         };
 
@@ -2807,14 +2879,21 @@ createApp({
             let hasLocalNewer = false; // track if local has data newer than server
             let acceptedRemoteGlobalData = false;
             try {
-                const data = typeof serverSync.pullBootstrap === 'function'
+                const localMeta = await getSyncMeta();
+                const data = typeof serverSync.pullBootstrapDiff === 'function'
+                    ? await serverSync.pullBootstrapDiff(localMeta)
+                    : typeof serverSync.pullBootstrap === 'function'
                     ? await serverSync.pullBootstrap()
                     : await serverSync.pullAll();
                 if (!data) return;
                 const serverMeta = data.updatedAt || {};
+                const serverHashes = data.hashes || {};
                 _serverScopedMetaCache = { ..._serverScopedMetaCache, ...serverMeta };
-                const localMeta = await getSyncMeta();
+                _serverSyncRemoteHashes = { ..._serverSyncRemoteHashes, ...serverHashes };
+                const localHashMeta = await getSyncHashMeta();
+                const nextHashMeta = { ...localHashMeta };
                 const acceptedScopedMetaKeys = new Set();
+                const acceptedGlobalMetaKeys = new Set();
                 const g = data.global || {};
 
                 // ---- Helper: decide for a global key whether to take remote, keep local, or no-change ----
@@ -2837,6 +2916,7 @@ createApp({
                     if (decision === 'remote') {
                         characters.value = g.characters;
                         acceptedRemoteGlobalData = true;
+                        acceptedGlobalMetaKeys.add('global:characters');
                     } else if (decision === 'equal') {
                         // Both sides unchanged since last sync — keep local (identical anyway)
                     } else {
@@ -2858,6 +2938,7 @@ createApp({
                     const decision = decide(key);
                     if (decision === 'remote') {
                         acceptedRemoteGlobalData = true;
+                        acceptedGlobalMetaKeys.add(`global:${key}`);
                         switch (key) {
                             case 'settings':
                                 Object.keys(g.settings).forEach(k => {
@@ -2896,6 +2977,31 @@ createApp({
                         }
                     }
                     // 'local' or 'equal' -> keep current local value (don't touch)
+                }
+
+                const globalSnapshotForHash = buildServerSyncGlobalSnapshot();
+                for (const [key, value] of Object.entries(globalSnapshotForHash)) {
+                    if (value === undefined) continue;
+                    const metaKey = `global:${key}`;
+                    const serverTs = Number(serverMeta[metaKey] || 0);
+                    const localTs = Number(localMeta[metaKey] || 0);
+                    const serverHash = serverHashes[metaKey] || '';
+                    if (!serverTs) {
+                        if (localTs) hasLocalNewer = true;
+                        continue;
+                    }
+                    if (acceptedGlobalMetaKeys.has(metaKey)) {
+                        if (serverHash) nextHashMeta[metaKey] = serverHash;
+                        continue;
+                    }
+                    if (!serverHash) continue;
+                    const localHash = hashSyncValue(value);
+                    if (localHash && localHash === serverHash) {
+                        nextHashMeta[metaKey] = localHash;
+                        if (serverTs >= localTs) acceptedGlobalMetaKeys.add(metaKey);
+                    } else if (localTs >= serverTs || localHashMeta[metaKey] !== localHash) {
+                        hasLocalNewer = true;
+                    }
                 }
 
                 const activeScopedId = getLastActiveCharacterUuidForSync();
@@ -2955,6 +3061,13 @@ createApp({
                     }
                 }
                 await setSyncMeta(newMeta);
+                acceptedGlobalMetaKeys.forEach(metaKey => {
+                    if (serverHashes[metaKey]) nextHashMeta[metaKey] = serverHashes[metaKey];
+                });
+                acceptedScopedMetaKeys.forEach(metaKey => {
+                    if (serverHashes[metaKey]) nextHashMeta[metaKey] = serverHashes[metaKey];
+                });
+                await setSyncHashMeta(nextHashMeta);
 
                 if (_initComplete) {
                     await restoreLastActiveCharacterSelection({ fallbackToFirst: false, silent: true });

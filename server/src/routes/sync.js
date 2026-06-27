@@ -30,6 +30,16 @@ const GLOBAL_KEYS = new Set([
 const SCOPED_KEYS = new Set(['chat', 'memories']);
 const MAX_VALUE_SIZE = 50 * 1024 * 1024; // 50MB per value (角色卡含 avatar base64 可能很大)
 
+function hashSerializedValue(text) {
+  let hash = 2166136261;
+  const value = String(text || '');
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function checkKey(name, scoped) {
   const allowed = scoped ? SCOPED_KEYS : GLOBAL_KEYS;
   if (!allowed.has(name)) {
@@ -52,6 +62,11 @@ function serialize(value) {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
+function makeStoredValue(value) {
+  const serialized = serialize(value);
+  return { serialized, valueHash: hashSerializedValue(serialized) };
+}
+
 function deserialize(text) {
   if (text === null || text === undefined) return undefined;
   try { return JSON.parse(text); } catch (_) { return text; }
@@ -61,11 +76,13 @@ function deserialize(text) {
 router.get('/all', (req, res, next) => {
   try {
     const rows = db.prepare(
-      'SELECT scope, name, value, updated_at FROM user_data WHERE user_id = ?'
+      'SELECT scope, name, value, value_hash, updated_at FROM user_data WHERE user_id = ?'
     ).all(req.user.id);
-    const data = { global: {}, scoped: {}, updatedAt: {} };
+    const data = { global: {}, scoped: {}, updatedAt: {}, hashes: {} };
     for (const r of rows) {
-      data.updatedAt[`${r.scope}:${r.name}`] = r.updated_at;
+      const metaKey = `${r.scope}:${r.name}`;
+      data.updatedAt[metaKey] = r.updated_at;
+      data.hashes[metaKey] = r.value_hash || hashSerializedValue(r.value);
       if (r.scope === 'global') data.global[r.name] = deserialize(r.value);
       else {
         // scoped name format: <name>:<id>
@@ -82,13 +99,47 @@ router.get('/all', (req, res, next) => {
 router.get('/bootstrap', (req, res, next) => {
   try {
     const rows = db.prepare(
-      'SELECT scope, name, value, updated_at FROM user_data WHERE user_id = ?'
+      'SELECT scope, name, value, value_hash, updated_at FROM user_data WHERE user_id = ?'
     ).all(req.user.id);
-    const data = { global: {}, scoped: {}, scopedMeta: {}, updatedAt: {} };
+    const data = { global: {}, scoped: {}, scopedMeta: {}, updatedAt: {}, hashes: {} };
     for (const r of rows) {
-      data.updatedAt[`${r.scope}:${r.name}`] = r.updated_at;
+      const metaKey = `${r.scope}:${r.name}`;
+      data.updatedAt[metaKey] = r.updated_at;
+      data.hashes[metaKey] = r.value_hash || hashSerializedValue(r.value);
       if (r.scope === 'global') {
         data.global[r.name] = deserialize(r.value);
+      } else {
+        const [name, id] = r.name.split(':');
+        if (!data.scopedMeta[name]) data.scopedMeta[name] = {};
+        data.scopedMeta[name][id] = r.updated_at;
+      }
+    }
+    res.json(data);
+  } catch (e) { next(e); }
+});
+
+// ---------- POST /sync/bootstrap-diff : global values only when client meta is stale ----------
+router.post('/bootstrap-diff', (req, res, next) => {
+  try {
+    const known = req.body?.known && typeof req.body.known === 'object' ? req.body.known : {};
+    const rows = db.prepare(
+      'SELECT scope, name, value_hash, updated_at FROM user_data WHERE user_id = ?'
+    ).all(req.user.id);
+    const data = { global: {}, scoped: {}, scopedMeta: {}, updatedAt: {}, hashes: {} };
+    const valueStmt = db.prepare(
+      'SELECT value, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
+    );
+    for (const r of rows) {
+      const metaKey = `${r.scope}:${r.name}`;
+      data.updatedAt[metaKey] = r.updated_at;
+      if (r.value_hash) data.hashes[metaKey] = r.value_hash;
+      if (r.scope === 'global') {
+        const knownTs = Number(known[metaKey] || 0);
+        if (!knownTs || r.updated_at > knownTs) {
+          const valueRow = valueStmt.get(req.user.id, r.scope, r.name);
+          data.global[r.name] = deserialize(valueRow?.value);
+          data.hashes[metaKey] = valueRow?.value_hash || hashSerializedValue(valueRow?.value);
+        }
       } else {
         const [name, id] = r.name.split(':');
         if (!data.scopedMeta[name]) data.scopedMeta[name] = {};
@@ -116,12 +167,12 @@ router.put('/global/:name', (req, res, next) => {
     const name = req.params.name;
     checkKey(name, false);
     const value = req.body?.value;
-    const serialized = serialize(value);
+    const { serialized, valueHash } = makeStoredValue(value);
     checkSize(serialized);
     db.prepare(
-      `INSERT INTO user_data (user_id, scope, name, value, updated_at) VALUES (?, 'global', ?, ?, ?)
-       ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(req.user.id, name, serialized, now());
+      `INSERT INTO user_data (user_id, scope, name, value, value_hash, updated_at) VALUES (?, 'global', ?, ?, ?, ?)
+       ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, value_hash = excluded.value_hash, updated_at = excluded.updated_at`
+    ).run(req.user.id, name, serialized, valueHash, now());
     res.json({ ok: true, updatedAt: now() });
   } catch (e) { next(e); }
 });
@@ -155,13 +206,13 @@ router.put('/scoped/:name/:id', (req, res, next) => {
     const { name, id } = req.params;
     checkKey(name, true);
     const value = req.body?.value;
-    const serialized = serialize(value);
+    const { serialized, valueHash } = makeStoredValue(value);
     checkSize(serialized);
     const scopedName = `${name}:${id}`;
     db.prepare(
-      `INSERT INTO user_data (user_id, scope, name, value, updated_at) VALUES (?, 'scoped', ?, ?, ?)
-       ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(req.user.id, scopedName, serialized, now());
+      `INSERT INTO user_data (user_id, scope, name, value, value_hash, updated_at) VALUES (?, 'scoped', ?, ?, ?, ?)
+       ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, value_hash = excluded.value_hash, updated_at = excluded.updated_at`
+    ).run(req.user.id, scopedName, serialized, valueHash, now());
     res.json({ ok: true, updatedAt: now() });
   } catch (e) { next(e); }
 });
@@ -184,22 +235,22 @@ router.post('/bulk', (req, res, next) => {
     const { global = {}, scoped = {}, deletes = { global: [], scoped: [] } } = req.body || {};
     const tx = db.transaction(() => {
       const upsert = db.prepare(
-        `INSERT INTO user_data (user_id, scope, name, value, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+        `INSERT INTO user_data (user_id, scope, name, value, value_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, scope, name) DO UPDATE SET value = excluded.value, value_hash = excluded.value_hash, updated_at = excluded.updated_at`
       );
       const del = db.prepare('DELETE FROM user_data WHERE user_id = ? AND scope = ? AND name = ?');
       for (const [name, value] of Object.entries(global)) {
         checkKey(name, false);
-        const serialized = serialize(value);
+        const { serialized, valueHash } = makeStoredValue(value);
         checkSize(serialized);
-        upsert.run(req.user.id, 'global', name, serialized, now());
+        upsert.run(req.user.id, 'global', name, serialized, valueHash, now());
       }
       for (const [name, scopedMap] of Object.entries(scoped)) {
         checkKey(name, true);
         for (const [id, value] of Object.entries(scopedMap)) {
-          const serialized = serialize(value);
+          const { serialized, valueHash } = makeStoredValue(value);
           checkSize(serialized);
-          upsert.run(req.user.id, 'scoped', `${name}:${id}`, serialized, now());
+          upsert.run(req.user.id, 'scoped', `${name}:${id}`, serialized, valueHash, now());
         }
       }
       for (const name of (deletes.global || [])) {

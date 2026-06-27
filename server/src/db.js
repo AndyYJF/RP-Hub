@@ -152,6 +152,7 @@ const migrations = [
   );`,
   `CREATE INDEX IF NOT EXISTS idx_api_usage_user ON api_usage(user_id);
    CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);`,
+  `ALTER TABLE user_data ADD COLUMN value_hash TEXT DEFAULT '';`,
 ];
 
 // Simple migration runner based on PRAGMA user_version

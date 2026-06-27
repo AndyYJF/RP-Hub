@@ -369,6 +369,27 @@
             }
         }
 
+        async pullBootstrapDiff(known = {}) {
+            if (!this.isServerMode) return null;
+            this._emit(EVENT_SYNC_START, { type: 'bootstrap-diff' });
+            try {
+                const data = await this._request('/api/sync/bootstrap-diff', {
+                    method: 'POST',
+                    body: JSON.stringify({ known: known || {} }),
+                });
+                this.lastSync = Date.now();
+                lsSet(STORAGE_KEYS.lastSync, String(this.lastSync));
+                return data;
+            } catch (e) {
+                if (e?.status === 404) {
+                    return this.pullBootstrap();
+                }
+                throw e;
+            } finally {
+                this._emit(EVENT_SYNC_END, { type: 'bootstrap-diff' });
+            }
+        }
+
         async putGlobal(name, value) {
             if (!this.isServerMode) return null;
             return this._request('/api/sync/global/' + encodeURIComponent(name), {
