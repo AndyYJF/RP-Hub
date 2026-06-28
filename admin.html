@@ -451,6 +451,42 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                     </table>
                     <div v-else class="text-sm text-gray-400 py-10 text-center">暂无请求记录</div>
                 </div>
+
+                <div class="dash-card p-4 overflow-auto">
+                    <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+                        <div>
+                            <div class="dash-card-title">用量明细</div>
+                            <div class="text-xs text-gray-500 mt-1">分页查看完整记录，可按用户 ID 过滤</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input class="input w-32 text-sm" type="number" min="1" v-model="usageDetailFilter.userId" @keyup.enter="loadUsageDetails(1)" placeholder="用户 ID">
+                            <button class="btn btn-ghost btn-sm" @click="clearUsageDetailFilter" v-if="usageDetailFilter.userId">清空</button>
+                            <button class="btn btn-primary btn-sm" :disabled="usageDetails.loading" @click="loadUsageDetails(1)">{{ usageDetails.loading?'查询中...':'查询' }}</button>
+                        </div>
+                    </div>
+                    <table v-if="usageDetails.list.length">
+                        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>接口</th><th>输入</th><th>输出</th><th>Tokens</th></tr></thead>
+                        <tbody>
+                            <tr v-for="r in usageDetails.list" :key="r.id">
+                                <td class="text-xs text-gray-500">{{ formatDateTime(r.createdAt) }}</td>
+                                <td>{{ r.username || '#'+r.userId }}</td>
+                                <td class="max-w-xs truncate" :title="r.model">{{ r.model || '-' }}</td>
+                                <td class="text-xs text-gray-500 max-w-xs truncate" :title="r.endpoint">{{ formatEndpoint(r.endpoint) }}</td>
+                                <td class="mono">{{ formatNumber(r.promptTokens) }}</td>
+                                <td class="mono">{{ formatNumber(r.completionTokens) }}</td>
+                                <td class="font-semibold mono">{{ formatNumber(r.totalTokens) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div v-else class="text-sm text-gray-400 py-10 text-center">{{ usageDetails.loading ? '正在加载明细...' : '暂无明细记录' }}</div>
+                    <div class="flex justify-between items-center mt-3 text-sm text-gray-600">
+                        <span>共 {{ usageDetails.total }} 条 · 第 {{ usageDetails.page }} / {{ Math.ceil(usageDetails.total/usageDetails.pageSize) || 1 }} 页</span>
+                        <div class="flex gap-2">
+                            <button class="btn btn-ghost btn-sm" :disabled="usageDetails.page<=1 || usageDetails.loading" @click="loadUsageDetails(usageDetails.page-1)">上一页</button>
+                            <button class="btn btn-ghost btn-sm" :disabled="usageDetails.page*usageDetails.pageSize>=usageDetails.total || usageDetails.loading" @click="loadUsageDetails(usageDetails.page+1)">下一页</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div v-else class="dash-card p-10 text-center text-gray-400">正在加载用量数据...</div>
@@ -999,9 +1035,31 @@ createApp({
         // API usage
         const usageSummary = ref(null);
         const usageRange = ref('7d');
+        const usageDetails = reactive({ list: [], total: 0, page: 1, pageSize: 50, loading: false });
+        const usageDetailFilter = reactive({ userId: '' });
         async function loadUsageSummary() {
             try { usageSummary.value = await sync.adminApiUsageSummary(usageRange.value); }
             catch (e) { toast(e.message, 'error'); }
+        }
+        async function loadUsageDetails(page = 1) {
+            usageDetails.loading = true;
+            try {
+                const userId = parseInt(usageDetailFilter.userId || '0', 10);
+                const r = await sync.adminApiUsage({
+                    page,
+                    pageSize: usageDetails.pageSize,
+                    userId: Number.isFinite(userId) && userId > 0 ? userId : '',
+                });
+                usageDetails.list = r.usage || [];
+                usageDetails.total = r.total || 0;
+                usageDetails.page = r.page || page;
+                usageDetails.pageSize = r.pageSize || usageDetails.pageSize;
+            } catch (e) { toast(e.message, 'error'); }
+            finally { usageDetails.loading = false; }
+        }
+        function clearUsageDetailFilter() {
+            usageDetailFilter.userId = '';
+            loadUsageDetails(1);
         }
         const usageTotals = computed(() => usageSummary.value?.totals || {});
         const usageSeries = computed(() => usageSummary.value?.series || []);
@@ -1163,6 +1221,7 @@ createApp({
             if (v === 'library' && !lib.list.length) loadLibrary(1);
             if (v === 'announcements' && !announcements.value.length) loadAnnouncements();
             if (v === 'apiusage' && !usageSummary.value) loadUsageSummary();
+            if (v === 'apiusage' && !usageDetails.list.length) loadUsageDetails(1);
             if (v === 'maintenance' && !maintenance.data) loadMaintenance();
             if (v === 'audit' && !audit.list.length) loadAudit(1);
         }
@@ -1220,6 +1279,7 @@ createApp({
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
+            usageDetails, usageDetailFilter, loadUsageDetails, clearUsageDetailFilter,
             usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
