@@ -412,10 +412,21 @@ router.get('/audit', (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize || '50', 10)));
   const action = (req.query.action || '').toString();
-  let where = '';
+  const q = (req.query.q || '').toString().trim();
+  const userId = parseInt(req.query.userId || '0', 10);
+  const whereParts = [];
   const params = [];
-  if (action) { where = 'WHERE action = ?'; params.push(action); }
-  const total = db.prepare(`SELECT COUNT(*) as c FROM audit_logs ${where}`).get(...params).c;
+  if (action) { whereParts.push('a.action = ?'); params.push(action); }
+  if (Number.isFinite(userId) && userId > 0) { whereParts.push('a.user_id = ?'); params.push(userId); }
+  if (q) {
+    const like = `%${q}%`;
+    whereParts.push('(u.username LIKE ? OR a.action LIKE ? OR a.target LIKE ? OR a.detail LIKE ? OR a.ip LIKE ?)');
+    params.push(like, like, like, like, like);
+  }
+  const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+  const total = db.prepare(
+    `SELECT COUNT(*) as c FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ${where}`
+  ).get(...params).c;
   const rows = db.prepare(
     `SELECT a.*, u.username FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
      ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`

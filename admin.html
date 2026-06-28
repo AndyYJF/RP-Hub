@@ -638,17 +638,18 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
 
         <!-- 审计日志 -->
         <section v-if="view==='audit'">
-            <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
                 <h2 class="text-xl font-bold">审计日志</h2>
-                <select class="input w-48" v-model="auditFilter.action" @change="loadAudit(1)">
-                    <option value="">全部操作</option>
-                    <option value="login">登录</option><option value="register">注册</option>
-                    <option value="library_submit">提交角色卡</option><option value="library_review">审核角色卡</option>
-                    <option value="admin_update_user">更新用户</option><option value="admin_delete_user">删除用户</option>
-                    <option value="announcement_create">创建公告</option>
-                    <option value="admin_rebuild_sync_hashes">补齐同步哈希</option>
-                    <option value="admin_cleanup_image_cache_temp">清理临时缓存</option>
-                </select>
+                <div class="flex gap-2">
+                    <input class="input w-48" v-model="auditFilter.q" placeholder="搜索用户/目标/IP" @keyup.enter="loadAudit(1)">
+                    <input class="input w-32" type="number" min="1" v-model="auditFilter.userId" placeholder="用户 ID" @keyup.enter="loadAudit(1)">
+                    <select class="input w-48" v-model="auditFilter.action" @change="loadAudit(1)">
+                        <option value="">全部操作</option>
+                        <option v-for="option in auditActionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" @click="clearAuditFilter" v-if="auditFilter.q || auditFilter.userId || auditFilter.action">清空</button>
+                    <button class="btn btn-primary btn-sm" @click="loadAudit(1)">查询</button>
+                </div>
             </div>
             <div class="card overflow-auto">
                 <table>
@@ -657,7 +658,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                         <tr v-for="l in audit.list" :key="l.id">
                             <td class="text-xs text-gray-500">{{ formatDateTime(l.createdAt) }}</td>
                             <td>{{ l.username || '#'+l.userId }}</td>
-                            <td><span class="tag tag-user">{{ l.action }}</span></td>
+                            <td><span class="tag tag-user">{{ auditActionLabel(l.action) }}</span></td>
                             <td class="text-xs">{{ l.target }}</td>
                             <td class="text-xs text-gray-500 max-w-xs truncate">{{ l.detail }}</td>
                             <td class="text-xs text-gray-400">{{ l.ip }}</td>
@@ -1205,12 +1206,49 @@ createApp({
 
         // Audit
         const audit = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
-        const auditFilter = reactive({ action: '' });
+        const auditFilter = reactive({ action: '', q: '', userId: '' });
+        const auditActionOptions = [
+            { value: 'login', label: '登录' },
+            { value: 'register', label: '注册' },
+            { value: 'update_profile', label: '更新个人资料' },
+            { value: 'library_submit', label: '提交角色卡' },
+            { value: 'library_resubmit', label: '重新提交角色卡' },
+            { value: 'library_delete', label: '撤回角色卡' },
+            { value: 'library_download', label: '下载角色卡' },
+            { value: 'library_review', label: '审核角色卡' },
+            { value: 'library_admin_delete', label: '删除角色卡' },
+            { value: 'admin_create_user', label: '创建用户' },
+            { value: 'admin_update_user', label: '更新用户' },
+            { value: 'admin_delete_user', label: '删除用户' },
+            { value: 'announcement_create', label: '创建公告' },
+            { value: 'announcement_update', label: '更新公告' },
+            { value: 'announcement_delete', label: '删除公告' },
+            { value: 'admin_rebuild_sync_hashes', label: '补齐同步哈希' },
+            { value: 'admin_cleanup_image_cache_temp', label: '清理临时缓存' },
+            { value: 'wipe_data', label: '清空账号数据' },
+        ];
+        const auditActionLabelMap = Object.fromEntries(auditActionOptions.map(option => [option.value, option.label]));
         async function loadAudit(page = 1) {
             try {
-                const r = await sync.adminAudit({ page, pageSize: audit.pageSize, action: auditFilter.action });
+                const userId = parseInt(auditFilter.userId || '0', 10);
+                const r = await sync.adminAudit({
+                    page,
+                    pageSize: audit.pageSize,
+                    action: auditFilter.action,
+                    q: auditFilter.q,
+                    userId: Number.isFinite(userId) && userId > 0 ? userId : '',
+                });
                 audit.list = r.logs; audit.total = r.total; audit.page = r.page;
             } catch (e) { toast(e.message, 'error'); }
+        }
+        function clearAuditFilter() {
+            auditFilter.action = '';
+            auditFilter.q = '';
+            auditFilter.userId = '';
+            loadAudit(1);
+        }
+        function auditActionLabel(action) {
+            return auditActionLabelMap[action] || action || '-';
         }
 
         // Navigation & helpers
@@ -1283,7 +1321,7 @@ createApp({
             usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
-            audit, auditFilter, loadAudit,
+            audit, auditFilter, auditActionOptions, loadAudit, clearAuditFilter, auditActionLabel,
             statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
         };
     }
