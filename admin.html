@@ -71,6 +71,9 @@ tr:hover td{background:#fafbfc}
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
 .modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:680px;width:92%;max-height:85vh;overflow:auto}
 .table-actions{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center}
+.field-hint{font-size:.72rem;color:#9ca3af;margin-top:.25rem}
+.inline-check{display:inline-flex;align-items:center;gap:.45rem;font-size:.82rem;color:#4b5563;cursor:pointer}
+.inline-check input{width:1rem;height:1rem;accent-color:#2563eb}
 @media (max-width: 768px){
 body{background:#f9fafb}
 #app.admin-shell{flex-direction:column}
@@ -100,9 +103,10 @@ body{background:#f9fafb}
 .storage-row{grid-template-columns:minmax(0,1fr)}
 .storage-size{font-size:.78rem}
 .card.overflow-auto,.dash-card.overflow-auto{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{min-width:620px}
+table{min-width:760px}
 th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
 .table-actions{gap:.3rem}
+.inline-check{font-size:.8rem}
 .modal-mask{align-items:flex-end}
 .modal{width:100%;max-width:none;max-height:90vh;border-radius:1rem 1rem 0 0;padding:1rem}
 }
@@ -191,7 +195,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             </div>
             <div class="card overflow-auto">
                 <table>
-                    <thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>注册时间</th><th>最近登录</th><th>操作</th></tr></thead>
+                    <thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>API</th><th>注册时间</th><th>最近登录</th><th>操作</th></tr></thead>
                     <tbody>
                         <tr v-for="u in users.list" :key="u.id">
                             <td>{{ u.id }}</td>
@@ -199,6 +203,10 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                             <td>{{ u.displayName || '-' }}</td>
                             <td><span class="tag" :class="u.role==='admin'?'tag-admin':'tag-user'">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
                             <td><span class="tag" :class="'tag-'+u.status">{{ statusLabel(u.status) }}</span></td>
+                            <td>
+                                <div class="text-xs text-gray-700">{{ u.apiKey ? '已绑定' : '未绑定' }}</div>
+                                <div class="text-[11px] text-gray-400 mono">{{ formatQuota(u.apiQuota) }}</div>
+                            </td>
                             <td class="text-gray-500 text-xs">{{ formatDateTime(u.createdAt) }}</td>
                             <td class="text-gray-500 text-xs">{{ u.lastLoginAt?formatDateTime(u.lastLoginAt):'从未' }}</td>
                             <td>
@@ -207,7 +215,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                                 <button class="btn btn-danger btn-sm" @click="deleteUser(u)" v-if="u.id!==sync.user.id">删</button>
                             </td>
                         </tr>
-                        <tr v-if="!users.list.length"><td colspan="8" class="text-center text-gray-400 py-6">暂无数据</td></tr>
+                        <tr v-if="!users.list.length"><td colspan="9" class="text-center text-gray-400 py-6">暂无数据</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -666,11 +674,20 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                 </div>
                 <div v-if="userEditor.target">
                     <label class="block text-sm text-gray-600 mb-1">API Key（可绑定 new-api 子 key）</label>
-                    <input class="input" v-model="userEditor.form.apiKey" placeholder="留空则不修改">
+                    <input class="input" v-model="userEditor.form.apiKey" :disabled="userEditor.form.clearApiKey" placeholder="留空则不修改">
+                    <div class="field-hint">{{ userEditor.target.apiKey ? '当前：' + userEditor.target.apiKey : '当前未绑定 API Key' }}</div>
+                    <label class="inline-check mt-2">
+                        <input type="checkbox" v-model="userEditor.form.clearApiKey">
+                        <span>清空该用户 API Key</span>
+                    </label>
                 </div>
                 <div v-if="userEditor.target">
                     <label class="block text-sm text-gray-600 mb-1">API 配额（总 token 上限，0=不限）</label>
                     <input class="input" type="number" v-model.number="userEditor.form.apiQuota" min="0">
+                </div>
+                <div v-if="userEditor.target && userEditor.form.status === 'banned'">
+                    <label class="block text-sm text-gray-600 mb-1">封禁原因</label>
+                    <textarea class="input" rows="2" v-model="userEditor.form.bannedReason" maxlength="256"></textarea>
                 </div>
                 <div v-if="userEditor.target">
                     <label class="block text-sm text-gray-600 mb-1">重置密码（可选）</label>
@@ -789,7 +806,16 @@ createApp({
         }
         function openEditUser(u) {
             userEditor.target = u;
-            userEditor.form = { displayName: u.displayName, role: u.role, status: u.status, apiKey: '', apiQuota: u.apiQuota, password: '' };
+            userEditor.form = {
+                displayName: u.displayName,
+                role: u.role,
+                status: u.status,
+                apiKey: '',
+                clearApiKey: false,
+                apiQuota: u.apiQuota,
+                bannedReason: u.bannedReason || '',
+                password: '',
+            };
             userEditor.err = ''; userEditor.open = true;
         }
         async function saveUser() {
@@ -802,7 +828,9 @@ createApp({
                         status: userEditor.form.status,
                         apiQuota: userEditor.form.apiQuota,
                     };
-                    if (userEditor.form.apiKey) patch.apiKey = userEditor.form.apiKey;
+                    if (userEditor.form.status === 'banned') patch.bannedReason = userEditor.form.bannedReason || '';
+                    if (userEditor.form.clearApiKey) patch.apiKey = '';
+                    else if (String(userEditor.form.apiKey || '').trim()) patch.apiKey = String(userEditor.form.apiKey).trim();
                     if (userEditor.form.password) patch.password = userEditor.form.password;
                     await sync.adminUpdateUser(userEditor.target.id, patch);
                     toast('已更新', 'success');
@@ -982,6 +1010,10 @@ createApp({
         const usageEndpointMax = computed(() => Math.max(1, ...(usageSummary.value?.byEndpoint || []).map(e => Number(e.totalTokens || 0))));
         function formatNumber(value) {
             return new Intl.NumberFormat('zh-CN').format(Number(value || 0));
+        }
+        function formatQuota(value) {
+            const quota = Number(value || 0);
+            return quota > 0 ? `${compactNumber(quota)} tokens` : '不限额';
         }
         function compactNumber(value) {
             return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
@@ -1188,7 +1220,7 @@ createApp({
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
-            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, formatBytes, usageTokenPart,
+            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
             audit, auditFilter, loadAudit,
