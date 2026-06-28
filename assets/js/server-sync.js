@@ -533,6 +533,7 @@
         adminCreateUser(payload) { return this._request('/api/admin/users', { method: 'POST', body: JSON.stringify(payload) }); }
         adminUpdateUser(id, patch) { return this._request('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify(patch) }); }
         adminDeleteUser(id) { return this._request('/api/admin/users/' + id, { method: 'DELETE' }); }
+        adminLogoutUser(id) { return this._request('/api/admin/users/' + id + '/logout', { method: 'POST' }); }
         adminStats(range = '7d') { return this._request('/api/admin/stats?range=' + encodeURIComponent(range)); }
         adminAudit(params = {}) {
             const qs = new URLSearchParams();

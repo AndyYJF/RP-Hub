@@ -195,7 +195,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             </div>
             <div class="card overflow-auto">
                 <table>
-                    <thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>API</th><th>注册时间</th><th>最近登录</th><th>操作</th></tr></thead>
+                    <thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>状态</th><th>API</th><th>会话</th><th>注册时间</th><th>最近登录</th><th>操作</th></tr></thead>
                     <tbody>
                         <tr v-for="u in users.list" :key="u.id">
                             <td>{{ u.id }}</td>
@@ -207,15 +207,17 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                                 <div class="text-xs text-gray-700">{{ u.apiKey ? '已绑定' : '未绑定' }}</div>
                                 <div class="text-[11px] text-gray-400 mono">{{ formatQuota(u.apiQuota) }}</div>
                             </td>
+                            <td class="mono">{{ formatNumber(u.activeSessions) }}</td>
                             <td class="text-gray-500 text-xs">{{ formatDateTime(u.createdAt) }}</td>
                             <td class="text-gray-500 text-xs">{{ u.lastLoginAt?formatDateTime(u.lastLoginAt):'从未' }}</td>
                             <td>
                                 <button class="btn btn-ghost btn-sm" @click="openEditUser(u)">编辑</button>
+                                <button class="btn btn-ghost btn-sm" @click="logoutUser(u)" v-if="u.id!==sync.user.id && u.activeSessions">下线</button>
                                 <button class="btn btn-sm" :class="u.status==='active'?'btn-danger':'btn-primary'" @click="toggleBan(u)" v-if="u.id!==sync.user.id">{{ u.status==='active'?'封禁':'解封' }}</button>
                                 <button class="btn btn-danger btn-sm" @click="deleteUser(u)" v-if="u.id!==sync.user.id">删</button>
                             </td>
                         </tr>
-                        <tr v-if="!users.list.length"><td colspan="9" class="text-center text-gray-400 py-6">暂无数据</td></tr>
+                        <tr v-if="!users.list.length"><td colspan="10" class="text-center text-gray-400 py-6">暂无数据</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -895,6 +897,14 @@ createApp({
                 toast('已操作', 'success'); loadUsers(users.page);
             } catch (e) { toast(e.message, 'error'); }
         }
+        async function logoutUser(u) {
+            if (!confirm(`确认清除用户 ${u.username} 的登录态？该用户的刷新登录会失效。`)) return;
+            try {
+                const r = await sync.adminLogoutUser(u.id);
+                toast(`已清除 ${formatNumber(r.revoked || 0)} 个登录态`, 'success');
+                loadUsers(users.page);
+            } catch (e) { toast(e.message, 'error'); }
+        }
         async function deleteUser(u) {
             if (!confirm(`确认删除用户 ${u.username}？该操作不可撤销，将一并删除其所有数据。`)) return;
             try { await sync.adminDeleteUser(u.id); toast('已删除', 'success'); loadUsers(users.page); }
@@ -1227,6 +1237,7 @@ createApp({
             { value: 'library_admin_delete', label: '删除角色卡' },
             { value: 'admin_create_user', label: '创建用户' },
             { value: 'admin_update_user', label: '更新用户' },
+            { value: 'admin_logout_user', label: '清除登录态' },
             { value: 'admin_delete_user', label: '删除用户' },
             { value: 'announcement_create', label: '创建公告' },
             { value: 'announcement_update', label: '更新公告' },
@@ -1320,7 +1331,7 @@ createApp({
         return {
             sync, view, toasts, setView, goApp, goLogin, doLogout,
             stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
-            users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
+            users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, logoutUser, deleteUser,
             lib, libFilter, loadLibrary, clearLibraryFilter, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,

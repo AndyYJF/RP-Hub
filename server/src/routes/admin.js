@@ -21,6 +21,7 @@ function publicUser(u) {
     avatar: u.avatar,
     apiQuota: u.api_quota,
     apiKey: u.api_key ? u.api_key.slice(0, 4) + '****' : '',
+    activeSessions: Number(u.active_sessions || 0),
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at,
     bannedReason: u.banned_reason,
@@ -202,8 +203,11 @@ router.get('/users', (req, res) => {
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM users ${where}`).get(...params).c;
   const rows = db.prepare(
-    `SELECT * FROM users ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, pageSize, (page - 1) * pageSize);
+    `SELECT u.*, (
+     SELECT COUNT(*) FROM refresh_tokens rt WHERE rt.user_id = u.id AND rt.expires_at > ?
+     ) AS active_sessions
+     FROM users u ${where} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
+  ).all(now(), ...params, pageSize, (page - 1) * pageSize);
 
   res.json({ total, page, pageSize, users: rows.map(publicUser) });
 });
@@ -274,6 +278,18 @@ router.delete('/users/:id', (req, res, next) => {
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
     audit(req.user.id, 'admin_delete_user', target.username, '', req.ip);
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+router.post('/users/:id/logout', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (id === req.user.id) return res.status(400).json({ error: '不能强制下线自己' });
+    const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!target) return res.status(404).json({ error: '用户不存在' });
+    const info = db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(id);
+    audit(req.user.id, 'admin_logout_user', target.username, String(info.changes || 0), req.ip);
+    res.json({ ok: true, revoked: info.changes || 0 });
   } catch (e) { next(e); }
 });
 
