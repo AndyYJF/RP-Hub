@@ -2131,15 +2131,25 @@ createApp({
         };
 
         const GENERATED_IMAGE_REMOVED_TEXT = '[生成图片已清理：图片数据不再写入聊天记录]';
+        const GENERATED_IMAGE_REMOVED_TEXT_REGEX = /\[生成图片已清理：图片数据不再写入聊天记录\]/g;
+        const normalizeCleanedImageText = (value) => String(value || '')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
         const stripDataImagePayloadsFromText = (text) => {
-            if (typeof text !== 'string' || !text.includes('data:image/')) {
+            if (typeof text !== 'string') {
+                return { text, changed: false };
+            }
+            if (!text.includes('data:image/') && !text.includes(GENERATED_IMAGE_REMOVED_TEXT)) {
                 return { text, changed: false };
             }
 
             let cleaned = text
-                .replace(/!\[[^\]]*?\]\(\s*data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+(?:\s+["'][^"']*["'])?\s*\)/gi, GENERATED_IMAGE_REMOVED_TEXT)
-                .replace(/<img\b[^>]*\bsrc\s*=\s*["']data:image\/[^"']+["'][^>]*>/gi, GENERATED_IMAGE_REMOVED_TEXT)
-                .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{128,}/gi, GENERATED_IMAGE_REMOVED_TEXT);
+                .replace(GENERATED_IMAGE_REMOVED_TEXT_REGEX, '')
+                .replace(/!\[[^\]]*?\]\(\s*data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+(?:\s+["'][^"']*["'])?\s*\)/gi, '')
+                .replace(/<img\b[^>]*\bsrc\s*=\s*["']data:image\/[^"']+["'][^>]*>/gi, '')
+                .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{128,}/gi, '');
+            cleaned = normalizeCleanedImageText(cleaned);
 
             return { text: cleaned, changed: cleaned !== text };
         };
@@ -2315,6 +2325,13 @@ createApp({
         };
 
         const createGeneratedImageCacheMarker = (options) => `image-cache###${createGeneratedImageCachePayload(options)}###`;
+        const normalizeGeneratedImageCacheMarkersForSync = (text) => {
+            if (typeof text !== 'string' || !text.includes('image-cache###')) return text;
+            return text.replace(/image-cache###([^#]+)###/g, (full, payload) => {
+                const meta = parseGeneratedImageCachePayload(payload);
+                return meta.tags ? `image###${meta.tags}###` : '';
+            });
+        };
 
         const createNaiPendingImageHtml = ({ cacheKey, messageId, directiveIndex, tags, artists }) => (
             '<div class="nai-pending-image"'
@@ -2448,6 +2465,106 @@ createApp({
             return getStoredValue(`${GENERATED_IMAGE_CACHE_KEY_PREFIX}${cacheKey}`);
         };
 
+        const dataImageUrlToBlob = (dataUrl) => {
+            const match = String(dataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
+            if (!match) return null;
+            const mimeType = match[1] || 'image/png';
+            const base64 = match[2].replace(/\s+/g, '');
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: mimeType });
+        };
+
+        const replaceAsync = async (text, regex, replacer) => {
+            const parts = [];
+            let lastIndex = 0;
+            regex.lastIndex = 0;
+            let match;
+            while ((match = regex.exec(text)) !== null) {
+                parts.push(text.slice(lastIndex, match.index));
+                parts.push(await replacer(...match));
+                lastIndex = regex.lastIndex;
+            }
+            parts.push(text.slice(lastIndex));
+            return parts.join('');
+        };
+
+        const migrateDataImagePayloadsToCache = async (messages = []) => {
+            if (!Array.isArray(messages)) return { messages: [], changed: false };
+            let changed = false;
+            const migrated = [];
+            for (const originalMessage of messages) {
+                if (!originalMessage || typeof originalMessage !== 'object') {
+                    migrated.push(originalMessage);
+                    continue;
+                }
+                let message = originalMessage;
+                let content = typeof message.content === 'string' ? message.content : '';
+                if (!content.includes('data:image/') && !content.includes(GENERATED_IMAGE_REMOVED_TEXT)) {
+                    migrated.push(message);
+                    continue;
+                }
+                if (!message.id && ['user', 'assistant', 'system'].includes(message.role)) {
+                    message = { ...message, id: generateUUID() };
+                    changed = true;
+                }
+                let directiveIndex = 0;
+                const toCacheMarker = async (full, dataUrl) => {
+                    let blob = null;
+                    try {
+                        blob = dataImageUrlToBlob(dataUrl || full);
+                    } catch (e) {
+                        console.warn('Failed to migrate inline generated image:', e);
+                    }
+                    if (!blob || !message.id) {
+                        changed = true;
+                        return '';
+                    }
+                    const currentIndex = directiveIndex++;
+                    const cacheKey = buildGeneratedImageCacheKey({
+                        messageId: message.id,
+                        directiveIndex: currentIndex,
+                        tags: '',
+                        artists: ''
+                    });
+                    await setGeneratedImageCache(cacheKey, { blob }, {
+                        messageId: message.id,
+                        directiveIndex: currentIndex,
+                        model: settings.imageGenModel || '',
+                        size: settings.imageSize || ''
+                    });
+                    changed = true;
+                    return createGeneratedImageCacheMarker({
+                        cacheKey,
+                        tags: '',
+                        artists: '',
+                        messageId: message.id,
+                        directiveIndex: currentIndex
+                    });
+                };
+
+                content = await replaceAsync(content, /!\[[^\]]*?\]\(\s*(data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+)(?:\s+["'][^"']*["'])?\s*\)/gi, toCacheMarker);
+                content = await replaceAsync(content, /<img\b[^>]*\bsrc\s*=\s*["'](data:image\/[^"']+)["'][^>]*>/gi, toCacheMarker);
+                content = await replaceAsync(content, /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{128,}/gi, toCacheMarker);
+                const cleanResult = stripDataImagePayloadsFromText(content);
+                if (cleanResult.changed) changed = true;
+                const nextContent = cleanResult.text;
+                migrated.push(nextContent === message.content ? message : { ...message, content: nextContent });
+            }
+            return { messages: migrated, changed };
+        };
+
+        const prepareChatHistoryForSync = (messages = []) => {
+            const sanitized = sanitizeChatHistoryImageData(Array.isArray(messages) ? messages : []).messages
+                .map(stripRuntimeMessageFieldsForStorage);
+            return sanitized.map(message => {
+                if (!message || typeof message !== 'object' || typeof message.content !== 'string') return message;
+                const content = normalizeGeneratedImageCacheMarkersForSync(message.content);
+                return content === message.content ? message : { ...message, content };
+            });
+        };
+
         const stripRuntimeMessageFieldsForStorage = (message) => {
             if (!message || typeof message !== 'object') return message;
             const nextMessage = { ...message };
@@ -2482,12 +2599,13 @@ createApp({
 
             if (!changed) return;
             message.content = nextContent;
-            await saveChatHistoryNow();
+            await saveChatHistoryNow({ sync: false });
         };
 
         let chatHistorySaveTimer = null;
 
-        const saveChatHistoryNow = async () => {
+        const saveChatHistoryNow = async (options = {}) => {
+            const { sync = true } = options;
             if (chatHistorySaveTimer) {
                 clearTimeout(chatHistorySaveTimer);
                 chatHistorySaveTimer = null;
@@ -2495,18 +2613,19 @@ createApp({
             if (currentCharacterIndex.value < 0 || !currentCharacter.value || !currentCharacter.value.uuid) return;
 
             try {
-                const sanitizedHistory = sanitizeChatHistoryImageData(cloneForStorage(chatHistory.value));
+                const migratedHistory = await migrateDataImagePayloadsToCache(cloneForStorage(chatHistory.value));
+                const sanitizedHistory = sanitizeChatHistoryImageData(migratedHistory.messages);
                 const historyToSave = sanitizedHistory.messages.map(stripRuntimeMessageFieldsForStorage);
-                if (sanitizedHistory.changed) {
+                if (migratedHistory.changed || sanitizedHistory.changed) {
                     chatHistory.value = prepareLoadedChatHistoryForDisplay(historyToSave);
                 }
                 await setScopedStoredValue('chat', currentCharacter.value.uuid, historyToSave, { clone: false });
-                markChatSyncDirty(currentCharacter.value.uuid);
+                if (sync) markChatSyncDirty(currentCharacter.value.uuid);
             } catch (e) {
                 console.error('Failed to save chat history:', e);
             }
             // Trigger server sync for scoped chat data
-            scheduleServerSyncPush();
+            if (sync) scheduleServerSyncPush();
         };
 
         const scheduleChatHistorySave = () => {
@@ -2657,8 +2776,7 @@ createApp({
         };
 
         const buildChatDiffState = (messages = []) => {
-            const safeMessages = sanitizeChatHistoryImageData(Array.isArray(messages) ? messages : []).messages
-                .map(stripRuntimeMessageFieldsForStorage);
+            const safeMessages = prepareChatHistoryForSync(messages);
             return {
                 messages: safeMessages,
                 knownIds: safeMessages.map(message => String(message?.id || '')),
@@ -2747,8 +2865,9 @@ createApp({
                     await applySyncedChatValue(conflict.characterUuid, conflict.remoteMessages, conflict.remoteUpdatedAt, conflict.remoteHash);
                     showToast('已使用云端聊天记录', 'success');
                 } else if (action === 'local') {
-                    const result = await serverSync.putScopedChatConditional(conflict.characterUuid, conflict.localMessages, { force: true });
-                    await applySyncedChatValue(conflict.characterUuid, conflict.localMessages, result?.updatedAt || Date.now(), result?.hash || hashSyncValue(conflict.localMessages));
+                    const localMessagesForSync = prepareChatHistoryForSync(conflict.localMessages);
+                    const result = await serverSync.putScopedChatConditional(conflict.characterUuid, localMessagesForSync, { force: true });
+                    await applySyncedChatValue(conflict.characterUuid, conflict.localMessages, result?.updatedAt || Date.now(), result?.hash || hashSyncValue(localMessagesForSync));
                     showToast('已上传本地聊天记录并覆盖云端', 'success');
                 }
                 chatSyncConflict.value.show = false;
@@ -2842,6 +2961,16 @@ createApp({
             if (typeof isMessageThinkingOrRunning === 'function' && isMessageThinkingOrRunning(msg)) return false;
             if (index === chatHistory.value.length - 1 && !msg.isSelf && (isGenerating.value || isRemoteGenerating.value)) return false;
             return true;
+        };
+
+        const shouldDeferChatSyncForActiveGeneration = (charUuid) => {
+            if (!charUuid || currentCharacter.value?.uuid !== charUuid) return false;
+            if (isGenerating.value || isRemoteGenerating.value) return true;
+            try {
+                return !!document.querySelector('.nai-pending-image:not([data-done]):not([data-missing-cache])');
+            } catch (_) {
+                return false;
+            }
         };
 
         const scheduleServerSyncPush = () => {
@@ -2938,22 +3067,30 @@ createApp({
             const scoped = { memories: {} };
             const chatUploads = {};
             const chatUploadHashes = {};
+            const chatUploadLocalValues = {};
+            let deferredChatSync = false;
             const MAX_SCOPED_SIZE = 45 * 1024 * 1024; // 45MB per scoped entry (后端限制 50MB)
             for (const char of characters.value) {
                 if (!char.uuid) continue;
                 try {
+                    if (shouldDeferChatSyncForActiveGeneration(char.uuid)) {
+                        deferredChatSync = true;
+                        continue;
+                    }
                     const chat = await getScopedStoredValue('chat', char.uuid);
                     if (chat !== undefined) {
                         const sanitizedChat = sanitizeChatHistoryImageData(chat);
-                        const chatForSync = sanitizedChat.messages;
+                        const chatForStorage = sanitizedChat.messages.map(stripRuntimeMessageFieldsForStorage);
+                        const chatForSync = prepareChatHistoryForSync(chatForStorage);
                         if (sanitizedChat.changed) {
-                            await setScopedStoredValue('chat', char.uuid, chatForSync, { clone: false });
+                            await setScopedStoredValue('chat', char.uuid, chatForStorage, { clone: false });
                         }
                         const chatStr = JSON.stringify(chatForSync);
                         if (chatStr.length <= MAX_SCOPED_SIZE) {
                             const chatMetaKey = `scoped:chat:${char.uuid}`;
                             if (shouldIncludeSyncValue(chatMetaKey, chatForSync)) {
                                 chatUploads[char.uuid] = chatForSync;
+                                chatUploadLocalValues[char.uuid] = chatForStorage;
                                 chatUploadHashes[chatMetaKey] = hashSyncValue(chatForSync);
                                 delete pendingSyncHashes[chatMetaKey];
                             }
@@ -2972,6 +3109,9 @@ createApp({
             }
             if (!Object.keys(global).length && !Object.keys(chatUploads).length && !Object.keys(scoped.memories).length) {
                 await setSyncHashMeta(nextSyncHashMeta);
+                if (deferredChatSync) {
+                    window.setTimeout(() => scheduleServerSyncPush(), 5000);
+                }
                 return;
             }
             const hasBulkPayload = Object.keys(global).length || Object.keys(scoped.memories).length;
@@ -3008,7 +3148,7 @@ createApp({
                     markChatSyncClean(charUuid, chatSyncedAt);
                 } catch (e) {
                     if (e?.status === 409 || e?.body?.conflict) {
-                        showChatSyncConflict(charUuid, chatForSync, e.body || {});
+                        showChatSyncConflict(charUuid, chatUploadLocalValues[charUuid] || chatForSync, e.body || {});
                         continue;
                     }
                     throw e;
@@ -3024,6 +3164,9 @@ createApp({
                 _serverSyncRemoteHashes[metaKey] = hash;
             });
             await setSyncHashMeta(nextSyncHashMeta);
+            if (deferredChatSync) {
+                window.setTimeout(() => scheduleServerSyncPush(), 5000);
+            }
         };
 
         // ---------- Sync meta: local record of each key's last-synced updatedAt ----------

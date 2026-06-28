@@ -966,7 +966,7 @@
 
             /* Mobile sidebar drawer */
             .mobile-overlay {
-                background: rgba(15, 23, 42, 0.38) !important;
+                background: rgba(15, 23, 42, 0.44) !important;
                 opacity: 0;
                 pointer-events: none;
                 visibility: hidden;
@@ -990,6 +990,7 @@
                 max-width: 84vw;
                 border-top-right-radius: 1.5rem;
                 border-bottom-right-radius: 1.5rem;
+                border-right: 0 !important;
                 transform: translate3d(-104%, 0, 0);
                 transform-origin: left center;
                 transition: transform 0.28s cubic-bezier(0.22, 0.78, 0.25, 1);
@@ -997,8 +998,24 @@
                 will-change: transform;
                 backface-visibility: hidden;
                 box-shadow:
-                    18px 0 54px -24px rgba(15, 23, 42, 0.45),
-                    0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+                    16px 0 46px -26px rgba(15, 23, 42, 0.5),
+                    inset -1px 0 0 rgba(255, 255, 255, 0.94),
+                    0 0 0 1px rgba(255, 255, 255, 0.72) inset !important;
+                -webkit-box-shadow:
+                    16px 0 46px -26px rgba(15, 23, 42, 0.5),
+                    inset -1px 0 0 rgba(255, 255, 255, 0.94),
+                    0 0 0 1px rgba(255, 255, 255, 0.72) inset !important;
+            }
+
+            .app-sidebar::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                right: 0;
+                bottom: 0;
+                width: 1px;
+                pointer-events: none;
+                background: rgba(255, 255, 255, 0.94);
             }
 
             .app-sidebar.mobile-sidebar-open {
