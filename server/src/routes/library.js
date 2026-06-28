@@ -31,6 +31,27 @@ function publicCard(c) {
   };
 }
 
+function buildAdminLibraryWhere({ status = '', q = '' } = {}) {
+  const parts = [];
+  const params = [];
+  if (status) {
+    parts.push('status = ?');
+    params.push(status);
+  }
+  const query = String(q || '').trim().slice(0, 120);
+  if (query) {
+    const like = `%${query}%`;
+    parts.push(`(
+      name LIKE ? OR description LIKE ? OR tags LIKE ? OR author_name LIKE ? OR uuid LIKE ? OR CAST(id AS TEXT) LIKE ?
+    )`);
+    params.push(like, like, like, like, like, like);
+  }
+  return {
+    where: parts.length ? `WHERE ${parts.join(' AND ')}` : '',
+    params,
+  };
+}
+
 // ---------- Public: list approved cards ----------
 router.get('/', (req, res, next) => {
   try {
@@ -169,10 +190,12 @@ router.delete('/my/:uuid', authRequired, (req, res, next) => {
 router.get('/admin/pending', adminRequired, (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || '20', 10)));
-  const total = db.prepare("SELECT COUNT(*) as c FROM library_cards WHERE status = 'pending'").get().c;
+  const q = (req.query.q || '').toString();
+  const { where, params } = buildAdminLibraryWhere({ status: 'pending', q });
+  const total = db.prepare(`SELECT COUNT(*) as c FROM library_cards ${where}`).get(...params).c;
   const rows = db.prepare(
-    "SELECT * FROM library_cards WHERE status = 'pending' ORDER BY created_at ASC LIMIT ? OFFSET ?"
-  ).all(pageSize, (page - 1) * pageSize);
+    `SELECT * FROM library_cards ${where} ORDER BY created_at ASC LIMIT ? OFFSET ?`
+  ).all(...params, pageSize, (page - 1) * pageSize);
   res.json({ total, page, pageSize, cards: rows.map(publicCard) });
 });
 
@@ -220,9 +243,8 @@ router.get('/admin/list', adminRequired, (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || '20', 10)));
   const status = (req.query.status || '').toString();
-  let where = '';
-  const params = [];
-  if (status) { where = 'WHERE status = ?'; params.push(status); }
+  const q = (req.query.q || '').toString();
+  const { where, params } = buildAdminLibraryWhere({ status, q });
   const total = db.prepare(`SELECT COUNT(*) as c FROM library_cards ${where}`).get(...params).c;
   const rows = db.prepare(
     `SELECT * FROM library_cards ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`

@@ -233,11 +233,14 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
                 <h2 class="text-xl font-bold">角色卡审核</h2>
                 <div class="flex gap-2">
+                    <input class="input w-48" v-model="libFilter.q" placeholder="搜索名称/作者/UUID" @keyup.enter="loadLibrary(1)">
                     <select class="input w-32" v-model="libFilter.status" @change="loadLibrary(1)">
                         <option value="">全部</option>
                         <option value="pending">待审核</option><option value="approved">已上架</option>
                         <option value="rejected">已拒绝</option><option value="offline">已下架</option>
                     </select>
+                    <button class="btn btn-ghost btn-sm" @click="clearLibraryFilter" v-if="libFilter.q || libFilter.status">清空</button>
+                    <button class="btn btn-primary btn-sm" @click="loadLibrary(1)">查询</button>
                 </div>
             </div>
             <div class="card overflow-auto">
@@ -900,14 +903,19 @@ createApp({
 
         // Library
         const lib = reactive({ list: [], total: 0, page: 1, pageSize: 20 });
-        const libFilter = reactive({ status: '' });
+        const libFilter = reactive({ status: '', q: '' });
         async function loadLibrary(page = 1) {
             try {
                 const r = libFilter.status === 'pending'
-                    ? await sync.adminLibraryPending({ page, pageSize: lib.pageSize })
-                    : await sync.adminLibraryList({ page, pageSize: lib.pageSize, status: libFilter.status });
+                    ? await sync.adminLibraryPending({ page, pageSize: lib.pageSize, q: libFilter.q })
+                    : await sync.adminLibraryList({ page, pageSize: lib.pageSize, status: libFilter.status, q: libFilter.q });
                 lib.list = r.cards; lib.total = r.total; lib.page = r.page;
             } catch (e) { toast(e.message, 'error'); }
+        }
+        function clearLibraryFilter() {
+            libFilter.status = '';
+            libFilter.q = '';
+            loadLibrary(1);
         }
         const cardPreview = reactive({ open: false, card: null, data: null });
         async function previewCard(c) {
@@ -1313,7 +1321,7 @@ createApp({
             sync, view, toasts, setView, goApp, goLogin, doLogout,
             stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
-            lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
+            lib, libFilter, loadLibrary, clearLibraryFilter, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
