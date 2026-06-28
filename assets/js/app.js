@@ -713,6 +713,7 @@ createApp({
             apiProviderKeys: {},
             customApiUrl: '',
             customApiUrl2: '',
+            settingsLocalRevision: 0,
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
             temperature: 1.0,
@@ -961,6 +962,71 @@ createApp({
         };
         normalizeImageGenProviderSettings();
 
+        const SETTINGS_PENDING_LOCAL_KEY = 'rp_hub_settings_pending_v1';
+        let _settingsPersistTimer = null;
+        let _settingsRevisionGuard = false;
+
+        const getPlainSettingsSnapshot = () => {
+            let snapshot;
+            try {
+                snapshot = JSON.parse(JSON.stringify(settings));
+            } catch (_) {
+                snapshot = {};
+                Object.keys(settings).forEach(key => {
+                    const value = settings[key];
+                    if (typeof value !== 'function' && typeof value !== 'undefined') snapshot[key] = value;
+                });
+            }
+            const providerId = snapshot.apiProviderId || DEFAULT_API_PROVIDER_ID;
+            if (!snapshot.apiProviderKeys || typeof snapshot.apiProviderKeys !== 'object' || Array.isArray(snapshot.apiProviderKeys)) {
+                snapshot.apiProviderKeys = {};
+            }
+            snapshot.apiProviderKeys[providerId] = snapshot.apiKey || '';
+            if (isCustomApiProviderId(providerId)) {
+                snapshot[getCustomApiUrlKey(providerId)] = snapshot.apiUrl || '';
+            }
+            return snapshot;
+        };
+
+        const writePendingSettingsSnapshot = (snapshot = getPlainSettingsSnapshot()) => {
+            try {
+                localStorage.setItem(SETTINGS_PENDING_LOCAL_KEY, JSON.stringify({
+                    savedAt: Date.now(),
+                    value: snapshot
+                }));
+            } catch (_) {}
+            return snapshot;
+        };
+
+        const readPendingSettingsSnapshot = () => {
+            try {
+                const raw = localStorage.getItem(SETTINGS_PENDING_LOCAL_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || !parsed.value || typeof parsed.value !== 'object') return null;
+                return parsed;
+            } catch (_) {
+                return null;
+            }
+        };
+
+        const clearPendingSettingsSnapshot = () => {
+            try { localStorage.removeItem(SETTINGS_PENDING_LOCAL_KEY); } catch (_) {}
+        };
+
+        const touchSettingsLocalRevision = () => {
+            if (_settingsRevisionGuard) return;
+            _settingsRevisionGuard = true;
+            try {
+                settings.settingsLocalRevision = Math.max(
+                    Number(settings.settingsLocalRevision || 0) + 1,
+                    Date.now()
+                );
+            } finally {
+                _settingsRevisionGuard = false;
+            }
+        };
+
         async function markGlobalSyncDirty(key, value) {
             if (!serverSync?.isServerMode || _serverSyncSuppressPush) return;
             try {
@@ -977,19 +1043,36 @@ createApp({
             }
         }
 
-        async function persistSettingsChangeNow() {
+        async function persistSettingsChangeNow(options = {}) {
             if (!_initComplete || _serverSyncPulling) return;
+            if (_settingsPersistTimer) {
+                clearTimeout(_settingsPersistTimer);
+                _settingsPersistTimer = null;
+            }
             try {
                 if (!db) await initDB();
+                if (options.bumpRevision !== false) touchSettingsLocalRevision();
                 settings.contextSize = MAX_CONTEXT_SIZE;
                 normalizeActiveToolAggressivenessSettings();
-                await setStoredValue('settings', settings);
-                await markGlobalSyncDirty('settings', settings);
+                const snapshot = writePendingSettingsSnapshot();
+                await setStoredValue('settings', snapshot, { clone: false });
+                clearPendingSettingsSnapshot();
+                await markGlobalSyncDirty('settings', snapshot);
             } catch (e) {
                 console.error('Save settings failed:', e);
             }
             scheduleServerSyncPush();
         }
+
+        const scheduleSettingsPersistNow = () => {
+            if (!_initComplete || _serverSyncPulling || _settingsRevisionGuard) return;
+            writePendingSettingsSnapshot();
+            if (_settingsPersistTimer) clearTimeout(_settingsPersistTimer);
+            _settingsPersistTimer = window.setTimeout(() => {
+                _settingsPersistTimer = null;
+                persistSettingsChangeNow().catch(e => console.error('Save settings failed:', e));
+            }, 120);
+        };
 
         watch(() => settings.apiKey, (newKey) => {
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
@@ -1055,6 +1138,10 @@ createApp({
         watch(() => [settings.imageGenKey, settings.imageStyle, settings.customImageArtists, settings.imageGenCount, settings.qualityModel, settings.balancedModel, settings.fastModel, settings.uiTemplateModel, settings.fontFamily, settings.fontFamilyVersion], () => {
             syncSettingsToGenerator();
         });
+
+        watch(settings, () => {
+            scheduleSettingsPersistNow();
+        }, { deep: true, flush: 'sync' });
 
         const currentModelMode = ref('quality');
         const modelMode = computed({
@@ -3564,22 +3651,28 @@ createApp({
                 }
 
                 const savedSettings = await getStoredValue('settings');
-                if (savedSettings) {
-                    Object.keys(savedSettings).forEach(key => {
+                const pendingSettings = readPendingSettingsSnapshot();
+                const effectiveSettings = pendingSettings?.value
+                    ? { ...(savedSettings || {}), ...pendingSettings.value }
+                    : savedSettings;
+                let appliedPendingSettings = false;
+                if (effectiveSettings) {
+                    Object.keys(effectiveSettings).forEach(key => {
                         if (Object.prototype.hasOwnProperty.call(settings, key)) {
-                            settings[key] = savedSettings[key];
+                            settings[key] = effectiveSettings[key];
                         }
                     });
-                    if (!Object.prototype.hasOwnProperty.call(savedSettings, 'apiProviderId')) {
-                        const legacyProvider = getApiProviderByUrl(savedSettings.apiUrl);
-                        settings.apiProviderId = legacyProvider?.id || (savedSettings.apiUrl ? 'custom' : DEFAULT_API_PROVIDER_ID);
-                        if (!legacyProvider && savedSettings.apiUrl) settings.customApiUrl = savedSettings.apiUrl;
+                    appliedPendingSettings = !!pendingSettings?.value;
+                    if (!Object.prototype.hasOwnProperty.call(effectiveSettings, 'apiProviderId')) {
+                        const legacyProvider = getApiProviderByUrl(effectiveSettings.apiUrl);
+                        settings.apiProviderId = legacyProvider?.id || (effectiveSettings.apiUrl ? 'custom' : DEFAULT_API_PROVIDER_ID);
+                        if (!legacyProvider && effectiveSettings.apiUrl) settings.customApiUrl = effectiveSettings.apiUrl;
                     }
                     normalizeApiProviderSettings();
                 } else {
                     normalizeApiProviderSettings();
                 }
-                if ((!savedSettings || Number(savedSettings.fontFamilyVersion || 0) < 4) && settings.fontFamily === 'serif') {
+                if ((!effectiveSettings || Number(effectiveSettings.fontFamilyVersion || 0) < 4) && settings.fontFamily === 'serif') {
                     settings.fontFamily = 'modern';
                 }
                 settings.fontFamily = normalizeFontFamily(settings.fontFamily);
@@ -3588,6 +3681,12 @@ createApp({
                 delete settings.renderLayerLimit;
                 settings.contextSize = MAX_CONTEXT_SIZE;
                 normalizeActiveToolAggressivenessSettings();
+                if (appliedPendingSettings) {
+                    const snapshot = getPlainSettingsSnapshot();
+                    await setStoredValue('settings', snapshot, { clone: false });
+                    clearPendingSettingsSnapshot();
+                    await markGlobalSyncDirty('settings', snapshot);
+                }
 
                 const savedPresets = await getStoredValue('presets');
                 if (savedPresets) presets.value = savedPresets.map(normalizePreset);
