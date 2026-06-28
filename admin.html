@@ -69,7 +69,8 @@ tr:hover td{background:#fafbfc}
 .storage-pill{display:inline-flex;align-items:center;border-radius:999px;background:#eef2ff;color:#3730a3;padding:.12rem .5rem;font-size:.68rem;font-weight:700}
 .mono{font-variant-numeric:tabular-nums}
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
-.modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:640px;width:92%;max-height:85vh;overflow:auto}
+.modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:680px;width:92%;max-height:85vh;overflow:auto}
+.table-actions{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center}
 @media (max-width: 768px){
 body{background:#f9fafb}
 #app.admin-shell{flex-direction:column}
@@ -101,6 +102,7 @@ body{background:#f9fafb}
 .card.overflow-auto,.dash-card.overflow-auto{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{min-width:620px}
 th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
+.table-actions{gap:.3rem}
 .modal-mask{align-items:flex-end}
 .modal{width:100%;max-width:none;max-height:90vh;border-radius:1rem 1rem 0 0;padding:1rem}
 }
@@ -270,20 +272,23 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             </div>
             <div class="card overflow-auto">
                 <table>
-                    <thead><tr><th>标题</th><th>类型</th><th>状态</th><th>置顶</th><th>创建时间</th><th>操作</th></tr></thead>
+                    <thead><tr><th>标题</th><th>类型</th><th>状态</th><th>置顶</th><th>过期时间</th><th>创建时间</th><th>操作</th></tr></thead>
                     <tbody>
                         <tr v-for="a in announcements" :key="a.id">
                             <td class="font-medium">{{ a.title }}</td>
                             <td><span class="tag tag-user">{{ annTypeLabel(a.type) }}</span></td>
-                            <td><span class="tag" :class="a.active?'tag-active':'tag-offline'">{{ activeLabel(a.active) }}</span></td>
+                            <td><span class="tag" :class="announcementStatusClass(a)">{{ announcementStatusLabel(a) }}</span></td>
                             <td>{{ a.pinned?'是':'否' }}</td>
+                            <td class="text-gray-500 text-xs">{{ a.expiresAt?formatDateTime(a.expiresAt):'永不过期' }}</td>
                             <td class="text-gray-500 text-xs">{{ formatDateTime(a.createdAt) }}</td>
-                            <td>
+                            <td><div class="table-actions">
                                 <button class="btn btn-ghost btn-sm" @click="openAnnouncementEditor(a)">编辑</button>
+                                <button class="btn btn-ghost btn-sm" @click="toggleAnnouncementPinned(a)">{{ a.pinned?'取消置顶':'置顶' }}</button>
+                                <button class="btn btn-sm" :class="a.active?'btn-ghost':'btn-primary'" @click="toggleAnnouncementActive(a)">{{ a.active?'停用':'启用' }}</button>
                                 <button class="btn btn-danger btn-sm" @click="deleteAnnouncement(a)">删</button>
-                            </td>
+                            </div></td>
                         </tr>
-                        <tr v-if="!announcements.length"><td colspan="6" class="text-center text-gray-400 py-6">暂无公告</td></tr>
+                        <tr v-if="!announcements.length"><td colspan="7" class="text-center text-gray-400 py-6">暂无公告</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -711,6 +716,10 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                     <div><label class="block text-sm text-gray-600 mb-1">置顶</label><select class="input" v-model="annEditor.form.pinned"><option :value="true">是</option><option :value="false">否</option></select></div>
                     <div><label class="block text-sm text-gray-600 mb-1">生效</label><select class="input" v-model="annEditor.form.active"><option :value="true">生效</option><option :value="false">停用</option></select></div>
                 </div>
+                <div>
+                    <label class="block text-sm text-gray-600 mb-1">过期时间</label>
+                    <input class="input" type="datetime-local" v-model="annEditor.form.expiresAtInput">
+                </div>
                 <p v-if="annEditor.err" class="text-red-600 text-sm">{{ annEditor.err }}</p>
             </div>
             <div class="flex justify-end gap-2 mt-5">
@@ -867,25 +876,91 @@ createApp({
 
         // Announcements
         const announcements = ref([]);
+        function normalizeAnnouncement(a = {}) {
+            return {
+                ...a,
+                pinned: !!a.pinned,
+                active: !!a.active,
+                createdAt: a.createdAt ?? a.created_at ?? 0,
+                updatedAt: a.updatedAt ?? a.updated_at ?? 0,
+                expiresAt: a.expiresAt ?? a.expires_at ?? null,
+            };
+        }
         async function loadAnnouncements() {
-            try { const r = await sync.adminAnnouncements(); announcements.value = r.announcements; }
+            try {
+                const r = await sync.adminAnnouncements();
+                announcements.value = (r.announcements || []).map(normalizeAnnouncement);
+            }
             catch (e) { toast(e.message, 'error'); }
         }
         const annEditor = reactive({ open: false, target: null, form: {}, loading: false, err: '' });
+        function timestampToLocalInput(ts) {
+            if (!ts) return '';
+            const d = new Date(ts);
+            if (Number.isNaN(d.getTime())) return '';
+            const pad = (value) => String(value).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+        function localInputToTimestamp(value) {
+            if (!value) return null;
+            const ts = new Date(value).getTime();
+            return Number.isFinite(ts) ? ts : null;
+        }
         function openAnnouncementEditor(a) {
-            annEditor.target = a || null;
-            annEditor.form = a ? { title: a.title, content: a.content, type: a.type, pinned: !!a.pinned, active: !!a.active }
-                               : { title: '', content: '', type: 'notice', pinned: false, active: true };
+            const item = a ? normalizeAnnouncement(a) : null;
+            annEditor.target = item;
+            annEditor.form = item
+                ? {
+                    title: item.title,
+                    content: item.content,
+                    type: item.type,
+                    pinned: !!item.pinned,
+                    active: !!item.active,
+                    expiresAtInput: timestampToLocalInput(item.expiresAt),
+                }
+                : { title: '', content: '', type: 'notice', pinned: false, active: true, expiresAtInput: '' };
             annEditor.err = ''; annEditor.open = true;
+        }
+        function buildAnnouncementPayload(form) {
+            return {
+                title: form.title,
+                content: form.content,
+                type: form.type,
+                pinned: !!form.pinned,
+                active: !!form.active,
+                expiresAt: localInputToTimestamp(form.expiresAtInput),
+            };
         }
         async function saveAnnouncement() {
             annEditor.loading = true; annEditor.err = '';
             try {
-                if (annEditor.target) await sync.adminUpdateAnnouncement(annEditor.target.id, annEditor.form);
-                else await sync.adminCreateAnnouncement(annEditor.form);
+                const expiresAt = localInputToTimestamp(annEditor.form.expiresAtInput);
+                if (annEditor.form.expiresAtInput && (!expiresAt || expiresAt <= Date.now())) {
+                    annEditor.err = '过期时间需晚于当前时间';
+                    return;
+                }
+                const payload = buildAnnouncementPayload(annEditor.form);
+                if (annEditor.target) await sync.adminUpdateAnnouncement(annEditor.target.id, payload);
+                else await sync.adminCreateAnnouncement(payload);
                 toast('已保存', 'success'); annEditor.open = false; loadAnnouncements();
             } catch (e) { annEditor.err = e.message; }
             finally { annEditor.loading = false; }
+        }
+        async function toggleAnnouncementPinned(a) {
+            const item = normalizeAnnouncement(a);
+            try {
+                await sync.adminUpdateAnnouncement(item.id, { pinned: !item.pinned });
+                toast(item.pinned ? '已取消置顶' : '已置顶', 'success');
+                loadAnnouncements();
+            } catch (e) { toast(e.message, 'error'); }
+        }
+        async function toggleAnnouncementActive(a) {
+            const item = normalizeAnnouncement(a);
+            try {
+                await sync.adminUpdateAnnouncement(item.id, { active: !item.active });
+                toast(item.active ? '已停用' : '已启用', 'success');
+                loadAnnouncements();
+            } catch (e) { toast(e.message, 'error'); }
         }
         async function deleteAnnouncement(a) {
             if (!confirm(`确认删除公告 "${a.title}"？`)) return;
@@ -1080,6 +1155,22 @@ createApp({
         function cardStatusLabel(s) { return CARD_STATUS_LABELS[s] || s; }
         function annTypeLabel(t) { return ANN_TYPE_LABELS[t] || t; }
         function activeLabel(a) { return a ? '生效中' : '已停用'; }
+        function isAnnouncementExpired(a) {
+            const expiresAt = Number(normalizeAnnouncement(a).expiresAt || 0);
+            return !!expiresAt && expiresAt <= Date.now();
+        }
+        function announcementStatusLabel(a) {
+            const item = normalizeAnnouncement(a);
+            if (!item.active) return '已停用';
+            if (isAnnouncementExpired(item)) return '已过期';
+            return '生效中';
+        }
+        function announcementStatusClass(a) {
+            const item = normalizeAnnouncement(a);
+            if (!item.active) return 'tag-offline';
+            if (isAnnouncementExpired(item)) return 'tag-disabled';
+            return 'tag-active';
+        }
 
         onMounted(async () => {
             if (!sync.isAdmin) {
@@ -1094,7 +1185,8 @@ createApp({
             stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, deleteUser,
             lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
-            announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
+            announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
+            toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
             usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, formatBytes, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
