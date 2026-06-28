@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import fs from 'fs/promises';
+import path from 'path';
+import { config } from '../config.js';
 import { db, now, audit } from '../db.js';
 import { adminRequired } from '../middleware/auth.js';
 
@@ -22,6 +25,166 @@ function publicUser(u) {
     lastLoginAt: u.last_login_at,
     bannedReason: u.banned_reason,
   };
+}
+
+const IMAGE_CACHE_ROOT = path.resolve(path.dirname(config.dbPath), 'image-cache');
+const IMAGE_CACHE_TEMP_MAX_AGE = 60 * 60 * 1000;
+
+function hashSerializedValue(text) {
+  let hash = 2166136261;
+  const value = String(text || '');
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function splitScopedName(name = '') {
+  const idx = String(name).indexOf(':');
+  if (idx < 0) return { key: name, id: '' };
+  return { key: name.slice(0, idx), id: name.slice(idx + 1) };
+}
+
+function getSyncStorageStats() {
+  const rows = db.prepare(
+    `SELECT d.user_id, u.username, d.scope, d.name, d.value_hash, d.updated_at,
+            LENGTH(CAST(d.value AS BLOB)) AS bytes
+     FROM user_data d LEFT JOIN users u ON u.id = d.user_id`
+  ).all();
+  const byNameMap = new Map();
+  const byUserMap = new Map();
+  let totalBytes = 0;
+  let globalRecords = 0;
+  let scopedRecords = 0;
+  let chatRecords = 0;
+  let missingHashes = 0;
+
+  const entries = rows.map((r) => {
+    const size = Number(r.bytes || 0);
+    totalBytes += size;
+    if (r.scope === 'global') globalRecords += 1;
+    if (r.scope === 'scoped') scopedRecords += 1;
+    if (!r.value_hash) missingHashes += 1;
+
+    const scoped = r.scope === 'scoped' ? splitScopedName(r.name) : { key: r.name, id: '' };
+    const nameKey = r.scope === 'scoped' ? scoped.key : r.name;
+    if (nameKey === 'chat') chatRecords += 1;
+
+    const nameStat = byNameMap.get(nameKey) || { name: nameKey, records: 0, bytes: 0 };
+    nameStat.records += 1;
+    nameStat.bytes += size;
+    byNameMap.set(nameKey, nameStat);
+
+    const userKey = String(r.user_id || 0);
+    const userStat = byUserMap.get(userKey) || { userId: r.user_id, username: r.username || '', records: 0, bytes: 0 };
+    userStat.records += 1;
+    userStat.bytes += size;
+    byUserMap.set(userKey, userStat);
+
+    return {
+      userId: r.user_id,
+      username: r.username || '',
+      scope: r.scope,
+      name: nameKey,
+      id: scoped.id,
+      bytes: size,
+      updatedAt: r.updated_at,
+      hasHash: !!r.value_hash,
+    };
+  });
+
+  return {
+    records: rows.length,
+    totalBytes,
+    globalRecords,
+    scopedRecords,
+    chatRecords,
+    missingHashes,
+    byName: Array.from(byNameMap.values()).sort((a, b) => b.bytes - a.bytes).slice(0, 12),
+    byUser: Array.from(byUserMap.values()).sort((a, b) => b.bytes - a.bytes).slice(0, 12),
+    largest: entries.sort((a, b) => b.bytes - a.bytes).slice(0, 12),
+  };
+}
+
+async function scanImageCache({ cleanupTemps = false } = {}) {
+  const result = {
+    exists: false,
+    images: 0,
+    metaFiles: 0,
+    tempFiles: 0,
+    users: 0,
+    bytes: 0,
+    imageBytes: 0,
+    tempBytes: 0,
+    removedTempFiles: 0,
+    removedTempBytes: 0,
+    byUser: [],
+    largest: [],
+  };
+
+  let dirs;
+  try {
+    dirs = await fs.readdir(IMAGE_CACHE_ROOT, { withFileTypes: true });
+    result.exists = true;
+  } catch (e) {
+    if (e.code === 'ENOENT') return result;
+    throw e;
+  }
+
+  const userStats = new Map();
+  const cutoff = Date.now() - IMAGE_CACHE_TEMP_MAX_AGE;
+  for (const dirent of dirs) {
+    if (!dirent.isDirectory()) continue;
+    const userId = Number(dirent.name) || 0;
+    const userDir = path.join(IMAGE_CACHE_ROOT, dirent.name);
+    let files;
+    try {
+      files = await fs.readdir(userDir, { withFileTypes: true });
+    } catch (_) {
+      continue;
+    }
+    if (files.length) result.users += 1;
+    const userStat = userStats.get(dirent.name) || { userId, files: 0, images: 0, bytes: 0 };
+    for (const file of files) {
+      if (!file.isFile()) continue;
+      const filePath = path.join(userDir, file.name);
+      let stat;
+      try {
+        stat = await fs.stat(filePath);
+      } catch (_) {
+        continue;
+      }
+      const size = stat.size || 0;
+      result.bytes += size;
+      userStat.files += 1;
+      userStat.bytes += size;
+
+      if (file.name.endsWith('.bin')) {
+        result.images += 1;
+        result.imageBytes += size;
+        userStat.images += 1;
+        result.largest.push({ userId, name: file.name.replace(/\.bin$/, ''), bytes: size, updatedAt: stat.mtimeMs });
+      } else if (file.name.endsWith('.json')) {
+        result.metaFiles += 1;
+      } else if (file.name.includes('.tmp')) {
+        result.tempFiles += 1;
+        result.tempBytes += size;
+        if (cleanupTemps && stat.mtimeMs < cutoff) {
+          try {
+            await fs.rm(filePath, { force: true });
+            result.removedTempFiles += 1;
+            result.removedTempBytes += size;
+          } catch (_) {}
+        }
+      }
+    }
+    userStats.set(dirent.name, userStat);
+  }
+
+  result.byUser = Array.from(userStats.values()).sort((a, b) => b.bytes - a.bytes).slice(0, 12);
+  result.largest = result.largest.sort((a, b) => b.bytes - a.bytes).slice(0, 12);
+  return result;
 }
 
 // ---------- User management ----------
@@ -193,6 +356,55 @@ router.get('/stats', (req, res) => {
     announcements,
     series,
   });
+});
+
+// ---------- Maintenance / storage overview ----------
+router.get('/maintenance/overview', async (req, res, next) => {
+  try {
+    const syncStorage = getSyncStorageStats();
+    const imageCache = await scanImageCache();
+    res.json({
+      generatedAt: now(),
+      syncStorage,
+      imageCache,
+    });
+  } catch (e) { next(e); }
+});
+
+router.post('/maintenance/rebuild-sync-hashes', (req, res, next) => {
+  try {
+    const rows = db.prepare(
+      `SELECT id, value FROM user_data WHERE value_hash IS NULL OR value_hash = ''`
+    ).all();
+    if (rows.length) {
+      const tx = db.transaction(() => {
+        const update = db.prepare('UPDATE user_data SET value_hash = ? WHERE id = ?');
+        for (const row of rows) update.run(hashSerializedValue(row.value), row.id);
+      });
+      tx();
+    }
+    audit(req.user.id, 'admin_rebuild_sync_hashes', 'user_data', String(rows.length), req.ip);
+    res.json({ ok: true, updated: rows.length });
+  } catch (e) { next(e); }
+});
+
+router.post('/maintenance/cleanup-image-cache-temp', async (req, res, next) => {
+  try {
+    const result = await scanImageCache({ cleanupTemps: true });
+    audit(
+      req.user.id,
+      'admin_cleanup_image_cache_temp',
+      'image-cache',
+      `${result.removedTempFiles}:${result.removedTempBytes}`,
+      req.ip
+    );
+    res.json({
+      ok: true,
+      removedFiles: result.removedTempFiles,
+      removedBytes: result.removedTempBytes,
+      imageCache: result,
+    });
+  } catch (e) { next(e); }
 });
 
 // ---------- Audit logs ----------

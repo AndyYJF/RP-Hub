@@ -58,6 +58,15 @@ tr:hover td{background:#fafbfc}
 .rank-bar{height:.45rem;border-radius:999px;background:#e5e7eb;overflow:hidden}
 .rank-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#2563eb,#60a5fa)}
 .rank-bar.green span{background:linear-gradient(90deg,#16a34a,#86efac)}
+.maintenance-action{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1rem;border:1px solid #e5e7eb;border-radius:.75rem;background:#fff}
+.maintenance-action-title{font-size:.9rem;font-weight:700;color:#111827}
+.maintenance-action-copy{font-size:.78rem;color:#6b7280;line-height:1.55;margin-top:.2rem}
+.storage-list{display:flex;flex-direction:column;gap:.7rem}
+.storage-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;align-items:center}
+.storage-name{font-size:.86rem;font-weight:600;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.storage-meta{font-size:.72rem;color:#9ca3af;margin-top:.15rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.storage-size{font-size:.82rem;font-weight:700;color:#111827;font-variant-numeric:tabular-nums}
+.storage-pill{display:inline-flex;align-items:center;border-radius:999px;background:#eef2ff;color:#3730a3;padding:.12rem .5rem;font-size:.68rem;font-weight:700}
 .mono{font-variant-numeric:tabular-nums}
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50}
 .modal{background:#fff;border-radius:.75rem;padding:1.5rem;max-width:640px;width:92%;max-height:85vh;overflow:auto}
@@ -85,6 +94,10 @@ body{background:#f9fafb}
 .chart-wrap{height:210px}
 .rank-row{grid-template-columns:minmax(0,1fr);gap:.25rem}
 .rank-row>div:last-child{justify-self:start}
+.maintenance-action{display:block;padding:.85rem}
+.maintenance-action .btn{margin-top:.8rem;width:100%}
+.storage-row{grid-template-columns:minmax(0,1fr)}
+.storage-size{font-size:.78rem}
 .card.overflow-auto,.dash-card.overflow-auto{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{min-width:620px}
 th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
@@ -112,6 +125,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             <div class="nav-item" :class="{active:view==='library'}" @click="setView('library')">🎴 角色卡审核</div>
             <div class="nav-item" :class="{active:view==='announcements'}" @click="setView('announcements')">📢 公告管理</div>
             <div class="nav-item" :class="{active:view==='apiusage'}" @click="setView('apiusage')">⚡ API 用量</div>
+            <div class="nav-item" :class="{active:view==='maintenance'}" @click="setView('maintenance')">🧰 数据维护</div>
             <div class="nav-item" :class="{active:view==='audit'}" @click="setView('audit')">📜 审计日志</div>
         </nav>
         <div class="border-t pt-3 space-y-1">
@@ -429,6 +443,150 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             <div v-else class="dash-card p-10 text-center text-gray-400">正在加载用量数据...</div>
         </section>
 
+        <!-- 数据维护 -->
+        <section v-if="view==='maintenance'">
+            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold">数据维护</h2>
+                    <p class="text-xs text-gray-500 mt-1">同步存储、图片缓存和低风险维护操作</p>
+                </div>
+                <button class="btn btn-ghost btn-sm" :disabled="maintenance.loading" @click="loadMaintenance">{{ maintenance.loading?'刷新中...':'刷新' }}</button>
+            </div>
+
+            <div v-if="maintenance.loading && !maintenance.data" class="dash-card p-10 text-center text-gray-400">正在读取维护数据...</div>
+
+            <div v-if="maintenance.data" class="space-y-4">
+                <div class="grid grid-cols-2 xl:grid-cols-6 gap-3">
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Sync Records</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceSync.records) }}</div>
+                        <div class="metric-sub">{{ formatBytes(maintenanceSync.totalBytes) }} 同步数据</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Chat Saves</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceSync.chatRecords) }}</div>
+                        <div class="metric-sub">{{ formatNumber(maintenanceSync.scopedRecords) }} scoped 项</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Missing Hash</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceSync.missingHashes) }}</div>
+                        <div class="metric-sub">旧数据可补齐</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Cached Images</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceImages.images) }}</div>
+                        <div class="metric-sub">{{ formatBytes(maintenanceImages.imageBytes) }}</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Cache Users</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceImages.users) }}</div>
+                        <div class="metric-sub">有图片缓存的用户</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Temp Files</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceImages.tempFiles) }}</div>
+                        <div class="metric-sub">{{ formatBytes(maintenanceImages.tempBytes) }}</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div class="dash-card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="dash-card-title">同步字段占用</div>
+                            <span class="storage-pill">{{ formatBytes(maintenanceSync.totalBytes) }}</span>
+                        </div>
+                        <div v-if="maintenanceSync.byName && maintenanceSync.byName.length" class="storage-list">
+                            <div v-for="item in maintenanceSync.byName" :key="item.name" class="storage-row">
+                                <div>
+                                    <div class="storage-name">{{ item.name }}</div>
+                                    <div class="storage-meta">{{ formatNumber(item.records) }} 条记录</div>
+                                </div>
+                                <div class="storage-size">{{ formatBytes(item.bytes) }}</div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-8 text-center">暂无同步数据</div>
+                    </div>
+
+                    <div class="dash-card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="dash-card-title">用户同步占用</div>
+                            <span class="storage-pill">Top 12</span>
+                        </div>
+                        <div v-if="maintenanceSync.byUser && maintenanceSync.byUser.length" class="storage-list">
+                            <div v-for="item in maintenanceSync.byUser" :key="item.userId" class="storage-row">
+                                <div>
+                                    <div class="storage-name">{{ item.username || '#'+item.userId }}</div>
+                                    <div class="storage-meta">{{ formatNumber(item.records) }} 条记录</div>
+                                </div>
+                                <div class="storage-size">{{ formatBytes(item.bytes) }}</div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-8 text-center">暂无用户同步数据</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div class="dash-card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="dash-card-title">最大同步项</div>
+                            <span class="storage-pill">用于排查大包</span>
+                        </div>
+                        <div v-if="maintenanceSync.largest && maintenanceSync.largest.length" class="storage-list">
+                            <div v-for="item in maintenanceSync.largest" :key="item.userId + ':' + item.scope + ':' + item.name + ':' + item.id" class="storage-row">
+                                <div>
+                                    <div class="storage-name">{{ item.username || '#'+item.userId }} · {{ item.scope }}/{{ item.name }}</div>
+                                    <div class="storage-meta">{{ item.id || '-' }} · {{ formatDateTime(item.updatedAt) }} · {{ item.hasHash ? '已哈希' : '未哈希' }}</div>
+                                </div>
+                                <div class="storage-size">{{ formatBytes(item.bytes) }}</div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-8 text-center">暂无大项数据</div>
+                    </div>
+
+                    <div class="dash-card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="dash-card-title">图片缓存占用</div>
+                            <span class="storage-pill">{{ formatBytes(maintenanceImages.bytes) }}</span>
+                        </div>
+                        <div v-if="maintenanceImages.byUser && maintenanceImages.byUser.length" class="storage-list">
+                            <div v-for="item in maintenanceImages.byUser" :key="item.userId" class="storage-row">
+                                <div>
+                                    <div class="storage-name">用户 #{{ item.userId }}</div>
+                                    <div class="storage-meta">{{ formatNumber(item.images) }} 张图片 · {{ formatNumber(item.files) }} 个文件</div>
+                                </div>
+                                <div class="storage-size">{{ formatBytes(item.bytes) }}</div>
+                            </div>
+                        </div>
+                        <div v-else class="text-sm text-gray-400 py-8 text-center">暂无图片缓存</div>
+                    </div>
+                </div>
+
+                <div class="dash-card p-4">
+                    <div class="dash-card-title mb-3">维护操作</div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                        <div class="maintenance-action">
+                            <div>
+                                <div class="maintenance-action-title">补齐旧同步哈希</div>
+                                <div class="maintenance-action-copy">只更新缺失 hash 的同步记录，用于减少 bootstrap-diff 返回完整数据的概率。</div>
+                            </div>
+                            <button class="btn btn-primary" :disabled="!!maintenance.action || !maintenanceSync.missingHashes" @click="runRebuildSyncHashes">
+                                {{ maintenance.action==='hashes'?'处理中...':'补齐哈希' }}
+                            </button>
+                        </div>
+                        <div class="maintenance-action">
+                            <div>
+                                <div class="maintenance-action-title">清理临时图片缓存</div>
+                                <div class="maintenance-action-copy">仅清理上传过程中残留且超过 1 小时的临时文件，不删除正式图片缓存。</div>
+                            </div>
+                            <button class="btn btn-ghost" :disabled="!!maintenance.action || !maintenanceImages.tempFiles" @click="runCleanupImageCacheTemp">
+                                {{ maintenance.action==='temp'?'处理中...':'清理临时文件' }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- 审计日志 -->
         <section v-if="view==='audit'">
             <div class="flex items-center justify-between mb-4">
@@ -439,6 +597,8 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                     <option value="library_submit">提交角色卡</option><option value="library_review">审核角色卡</option>
                     <option value="admin_update_user">更新用户</option><option value="admin_delete_user">删除用户</option>
                     <option value="announcement_create">创建公告</option>
+                    <option value="admin_rebuild_sync_hashes">补齐同步哈希</option>
+                    <option value="admin_cleanup_image_cache_temp">清理临时缓存</option>
                 </select>
             </div>
             <div class="card overflow-auto">
@@ -751,6 +911,18 @@ createApp({
         function compactNumber(value) {
             return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
         }
+        function formatBytes(value) {
+            const bytes = Number(value || 0);
+            if (bytes < 1024) return `${bytes} B`;
+            const units = ['KB', 'MB', 'GB', 'TB'];
+            let size = bytes / 1024;
+            let index = 0;
+            while (size >= 1024 && index < units.length - 1) {
+                size /= 1024;
+                index += 1;
+            }
+            return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[index]}`;
+        }
         function usageTokenPart(type) {
             const total = Number(usageTotals.value.totalTokens || 0);
             if (!total) return 0;
@@ -835,6 +1007,37 @@ createApp({
             }
         }
 
+        // Maintenance
+        const maintenance = reactive({ loading: false, action: '', data: null });
+        const maintenanceSync = computed(() => maintenance.data?.syncStorage || {});
+        const maintenanceImages = computed(() => maintenance.data?.imageCache || {});
+        async function loadMaintenance() {
+            maintenance.loading = true;
+            try { maintenance.data = await sync.adminMaintenanceOverview(); }
+            catch (e) { toast(e.message, 'error'); }
+            finally { maintenance.loading = false; }
+        }
+        async function runRebuildSyncHashes() {
+            if (!confirm('确认补齐旧同步哈希？该操作只更新缺失 hash 的元数据。')) return;
+            maintenance.action = 'hashes';
+            try {
+                const r = await sync.adminRebuildSyncHashes();
+                toast(`已补齐 ${formatNumber(r.updated || 0)} 条`, 'success');
+                await loadMaintenance();
+            } catch (e) { toast(e.message, 'error'); }
+            finally { maintenance.action = ''; }
+        }
+        async function runCleanupImageCacheTemp() {
+            if (!confirm('确认清理超过 1 小时的临时图片缓存文件？正式图片不会被删除。')) return;
+            maintenance.action = 'temp';
+            try {
+                const r = await sync.adminCleanupImageCacheTemp();
+                toast(`已清理 ${formatNumber(r.removedFiles || 0)} 个临时文件`, 'success');
+                await loadMaintenance();
+            } catch (e) { toast(e.message, 'error'); }
+            finally { maintenance.action = ''; }
+        }
+
         // Audit
         const audit = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
         const auditFilter = reactive({ action: '' });
@@ -853,6 +1056,7 @@ createApp({
             if (v === 'library' && !lib.list.length) loadLibrary(1);
             if (v === 'announcements' && !announcements.value.length) loadAnnouncements();
             if (v === 'apiusage' && !usageSummary.value) loadUsageSummary();
+            if (v === 'maintenance' && !maintenance.data) loadMaintenance();
             if (v === 'audit' && !audit.list.length) loadAudit(1);
         }
         function goApp() { location.href = 'index.html'; }
@@ -892,8 +1096,9 @@ createApp({
             lib, libFilter, loadLibrary, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, deleteAnnouncement,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
-            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, usageTokenPart,
+            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, compactNumber, formatBytes, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
+            maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
             audit, auditFilter, loadAudit,
             statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
         };

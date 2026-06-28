@@ -566,6 +566,15 @@
         adminApiUsageSummary(range = '7d') {
             return this._request('/api/admin/api-usage/summary?range=' + encodeURIComponent(range));
         }
+        adminMaintenanceOverview() {
+            return this._request('/api/admin/maintenance/overview');
+        }
+        adminRebuildSyncHashes() {
+            return this._request('/api/admin/maintenance/rebuild-sync-hashes', { method: 'POST' });
+        }
+        adminCleanupImageCacheTemp() {
+            return this._request('/api/admin/maintenance/cleanup-image-cache-temp', { method: 'POST' });
+        }
     }
 
     window.RPHubServerSync = new ServerSync();

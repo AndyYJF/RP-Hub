@@ -12,7 +12,7 @@ export function signAccessToken(user) {
 
 export function signRefreshToken(user) {
   return jwt.sign(
-    { sub: user.id, username: user.username, type: 'refresh' },
+    { sub: user.id, username: user.username, type: 'refresh', jti: crypto.randomUUID() },
     config.jwtRefreshSecret,
     { expiresIn: config.jwtRefreshExpiresIn }
   );
