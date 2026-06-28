@@ -2734,6 +2734,9 @@ createApp({
         let _serverSyncPulling = false;
         let _serverSyncSuppressPush = false;
         let _serverSyncInitialPulled = false;
+        let _serverSyncDeferredTimer = null;
+        let _serverSyncPushing = false;
+        let _serverSyncNeedsPushAfterCurrent = false;
         let _serverScopedMetaCache = {};
         let _serverSyncRemoteHashes = {};
         let _serverSyncAcceptedRemoteGlobalData = false;
@@ -2973,15 +2976,28 @@ createApp({
             }
         };
 
-        const scheduleServerSyncPush = () => {
+        const scheduleServerSyncPush = (delay = 1500) => {
             if (!serverSync || !serverSync.isServerMode) return;
             if (_serverSyncSuppressPush) return;
             if (!_serverSyncInitialPulled) return;
             if (_serverSyncTimer) clearTimeout(_serverSyncTimer);
+            const waitMs = Math.max(0, Number.isFinite(Number(delay)) ? Number(delay) : 1500);
             _serverSyncTimer = setTimeout(() => {
                 _serverSyncTimer = null;
                 pushServerSyncNow().catch(e => console.warn('[ServerSync] push failed:', e?.message || e));
-            }, 1500);
+            }, waitMs);
+        };
+
+        const scheduleDeferredServerSyncPush = (delay = 5000) => {
+            if (!serverSync || !serverSync.isServerMode) return;
+            if (_serverSyncSuppressPush) return;
+            if (!_serverSyncInitialPulled) return;
+            if (_serverSyncDeferredTimer) clearTimeout(_serverSyncDeferredTimer);
+            const waitMs = Math.max(1000, Number.isFinite(Number(delay)) ? Number(delay) : 5000);
+            _serverSyncDeferredTimer = window.setTimeout(() => {
+                _serverSyncDeferredTimer = null;
+                scheduleServerSyncPush(250);
+            }, waitMs);
         };
 
         const buildServerSyncGlobalSnapshot = () => {
@@ -3034,15 +3050,21 @@ createApp({
 
         const pushServerSyncNow = async () => {
             if (!serverSync || !serverSync.isServerMode) return;
-            if (!_serverSyncInitialPulled) {
-                console.warn('[ServerSync] push skipped before initial pull');
+            if (_serverSyncPushing) {
+                _serverSyncNeedsPushAfterCurrent = true;
                 return;
             }
-            const localMeta = await getSyncMeta();
-            const syncHashMeta = await getSyncHashMeta();
-            const nextSyncHashMeta = { ...syncHashMeta };
-            const pendingSyncHashes = {};
-            const shouldIncludeSyncValue = (metaKey, value) => {
+            _serverSyncPushing = true;
+            try {
+                if (!_serverSyncInitialPulled) {
+                    console.warn('[ServerSync] push skipped before initial pull');
+                    return;
+                }
+                const localMeta = await getSyncMeta();
+                const syncHashMeta = await getSyncHashMeta();
+                const nextSyncHashMeta = { ...syncHashMeta };
+                const pendingSyncHashes = {};
+                const shouldIncludeSyncValue = (metaKey, value) => {
                 const localHash = hashSyncValue(value);
                 if (localHash && syncHashMeta[metaKey] === localHash) return false;
                 const serverHash = _serverSyncRemoteHashes[metaKey] || '';
@@ -3073,6 +3095,9 @@ createApp({
             for (const char of characters.value) {
                 if (!char.uuid) continue;
                 try {
+                    if (chatSyncConflict.value.show && chatSyncConflict.value.characterUuid === char.uuid) {
+                        continue;
+                    }
                     if (shouldDeferChatSyncForActiveGeneration(char.uuid)) {
                         deferredChatSync = true;
                         continue;
@@ -3110,7 +3135,7 @@ createApp({
             if (!Object.keys(global).length && !Object.keys(chatUploads).length && !Object.keys(scoped.memories).length) {
                 await setSyncHashMeta(nextSyncHashMeta);
                 if (deferredChatSync) {
-                    window.setTimeout(() => scheduleServerSyncPush(), 5000);
+                    scheduleDeferredServerSyncPush();
                 }
                 return;
             }
@@ -3165,7 +3190,14 @@ createApp({
             });
             await setSyncHashMeta(nextSyncHashMeta);
             if (deferredChatSync) {
-                window.setTimeout(() => scheduleServerSyncPush(), 5000);
+                scheduleDeferredServerSyncPush();
+            }
+            } finally {
+                _serverSyncPushing = false;
+                if (_serverSyncNeedsPushAfterCurrent) {
+                    _serverSyncNeedsPushAfterCurrent = false;
+                    scheduleServerSyncPush(800);
+                }
             }
         };
 
@@ -3452,7 +3484,7 @@ createApp({
                 setTimeout(() => {
                     _serverSyncSuppressPush = false;
                     if (hasLocalNewer) {
-                        pushServerSyncNow().catch(e => console.warn('[ServerSync] post-pull push failed:', e?.message || e));
+                        scheduleServerSyncPush(500);
                     }
                 }, 3000);
             }
@@ -11722,9 +11754,7 @@ image###生成的提示词###
                     await setSyncMeta(meta);
                 }
                 if (scopedPull.localNewer) {
-                    setTimeout(() => {
-                        pushServerSyncNow().catch(e => console.warn('[ServerSync] scoped post-pull push failed:', e?.message || e));
-                    }, 1000);
+                    scheduleServerSyncPush(1000);
                 }
             }
 

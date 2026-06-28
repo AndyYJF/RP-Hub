@@ -272,13 +272,23 @@ router.put('/scoped/chat/:id/conditional', (req, res, next) => {
     const force = req.body?.force === true;
     const baseUpdatedAt = Number(req.body?.baseUpdatedAt || 0);
     const baseHash = String(req.body?.baseHash || '');
+    const { serialized, valueHash } = makeStoredValue(value);
+    checkSize(serialized);
     const current = db.prepare(
-      'SELECT updated_at, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
+      'SELECT updated_at, value, value_hash FROM user_data WHERE user_id = ? AND scope = ? AND name = ?'
     ).get(req.user.id, 'scoped', scopedName);
 
     if (!force) {
       const currentUpdatedAt = Number(current?.updated_at || 0);
-      const currentHash = String(current?.value_hash || '');
+      const currentHash = String(current?.value_hash || (current ? hashSerializedValue(current.value) : ''));
+      if (current && currentHash && currentHash === valueHash) {
+        if (!current.value_hash) {
+          db.prepare(
+            'UPDATE user_data SET value_hash = ? WHERE user_id = ? AND scope = ? AND name = ?'
+          ).run(valueHash, req.user.id, 'scoped', scopedName);
+        }
+        return res.json({ ok: true, updatedAt: currentUpdatedAt, hash: currentHash });
+      }
       const sameBase = current
         ? currentUpdatedAt === baseUpdatedAt && (!baseHash || !currentHash || currentHash === baseHash)
         : !baseUpdatedAt;
@@ -292,8 +302,6 @@ router.put('/scoped/chat/:id/conditional', (req, res, next) => {
       }
     }
 
-    const { serialized, valueHash } = makeStoredValue(value);
-    checkSize(serialized);
     const updatedAt = now();
     db.prepare(
       `INSERT INTO user_data (user_id, scope, name, value, value_hash, updated_at) VALUES (?, 'scoped', ?, ?, ?, ?)
