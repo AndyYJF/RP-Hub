@@ -270,7 +270,11 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                         <tr v-for="s in sessions.list" :key="s.id">
                             <td class="mono">{{ s.id }}</td>
                             <td>
-                                <div class="font-medium">{{ s.username || ('#'+s.userId) }} <span v-if="s.isSelf" class="text-xs text-primary-600">自己</span></div>
+                                <div class="font-medium">
+                                    {{ s.username || ('#'+s.userId) }}
+                                    <span v-if="s.isCurrent" class="text-xs text-primary-600">当前</span>
+                                    <span v-else-if="s.isSelf" class="text-xs text-gray-400">同账号</span>
+                                </div>
                                 <div class="text-[11px] text-gray-400 mono">UID {{ s.userId }} · {{ s.displayName || '-' }}</div>
                             </td>
                             <td><span class="tag" :class="sessionStateClass(s.state)">{{ sessionStateLabel(s.state) }}</span></td>
@@ -286,7 +290,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                                 <div class="text-[11px] text-gray-400">{{ formatRelativeTime(s.expiresAt) }}</div>
                             </td>
                             <td>
-                                <button class="btn btn-danger btn-sm" :disabled="s.isSelf || s.state!=='active' || sessions.action===s.id" @click="revokeSession(s)">
+                                <button class="btn btn-danger btn-sm" :disabled="s.isCurrent || s.state!=='active' || sessions.action===s.id" @click="revokeSession(s)">
                                     {{ sessions.action===s.id?'处理中...':'下线' }}
                                 </button>
                             </td>
@@ -1016,7 +1020,7 @@ createApp({
             loadSessions(1);
         }
         async function revokeSession(s) {
-            if (!s || s.isSelf) return;
+            if (!s || s.isCurrent) return;
             if (!confirm(`确认下线 ${s.username || ('#' + s.userId)} 的这个会话？`)) return;
             sessions.action = s.id;
             try {

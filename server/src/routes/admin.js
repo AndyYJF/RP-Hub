@@ -5,6 +5,7 @@ import path from 'path';
 import { config } from '../config.js';
 import { db, now, audit } from '../db.js';
 import { adminRequired } from '../middleware/auth.js';
+import { hashRefreshToken } from '../utils/jwt.js';
 
 const router = Router();
 
@@ -204,8 +205,15 @@ function sessionDeviceLabel(userAgent = '') {
   return os ? `${browser} · ${os}` : browser;
 }
 
-function publicSession(row, nowTs, currentUserId) {
+function currentRefreshHash(req) {
+  const token = String(req.headers['x-refresh-token'] || '');
+  return token ? hashRefreshToken(token) : '';
+}
+
+function publicSession(row, nowTs, currentUserId, currentTokenHash = '') {
   const expiresAt = Number(row.expires_at || 0);
+  const isSelf = row.user_id === currentUserId;
+  const isCurrent = !!currentTokenHash && row.token_hash === currentTokenHash;
   return {
     id: row.id,
     userId: row.user_id,
@@ -220,7 +228,8 @@ function publicSession(row, nowTs, currentUserId) {
     lastSeenAt: row.last_seen_at || row.created_at,
     expiresAt,
     state: expiresAt > nowTs ? 'active' : 'expired',
-    isSelf: row.user_id === currentUserId,
+    isSelf,
+    isCurrent,
   };
 }
 
@@ -373,6 +382,7 @@ router.get('/sessions', (req, res) => {
   const status = (req.query.status || 'active').toString();
   const userId = parseInt(req.query.userId || '0', 10);
   const nowTs = now();
+  const refreshHash = currentRefreshHash(req);
   const whereParts = ['1=1'];
   const params = [];
   if (status === 'active') { whereParts.push('rt.expires_at > ?'); params.push(nowTs); }
@@ -397,7 +407,7 @@ router.get('/sessions', (req, res) => {
     page,
     pageSize,
     stats: getSessionStats(nowTs),
-    sessions: rows.map(row => publicSession(row, nowTs, req.user.id)),
+    sessions: rows.map(row => publicSession(row, nowTs, req.user.id, refreshHash)),
   });
 });
 
@@ -408,7 +418,10 @@ router.delete('/sessions/:id', (req, res, next) => {
       `SELECT rt.*, u.username FROM refresh_tokens rt LEFT JOIN users u ON u.id = rt.user_id WHERE rt.id = ?`
     ).get(id);
     if (!session) return res.status(404).json({ error: '会话不存在' });
-    if (session.user_id === req.user.id) return res.status(400).json({ error: '不能在后台强制下线自己的会话' });
+    const refreshHash = currentRefreshHash(req);
+    if (session.user_id === req.user.id && (!refreshHash || session.token_hash === refreshHash)) {
+      return res.status(400).json({ error: '不能在后台强制下线当前会话' });
+    }
     const info = db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(id);
     audit(req.user.id, 'admin_logout_session', session.username || String(session.user_id), `${id}:${session.ip || ''}`, req.ip);
     res.json({ ok: true, revoked: info.changes || 0 });

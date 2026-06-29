@@ -537,9 +537,13 @@
         adminSessions(params = {}) {
             const qs = new URLSearchParams();
             for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, v);
-            return this._request('/api/admin/sessions' + (qs.toString() ? '?' + qs.toString() : ''));
+            const headers = this.refreshToken ? { 'X-Refresh-Token': this.refreshToken } : {};
+            return this._request('/api/admin/sessions' + (qs.toString() ? '?' + qs.toString() : ''), { headers });
         }
-        adminLogoutSession(id) { return this._request('/api/admin/sessions/' + id, { method: 'DELETE' }); }
+        adminLogoutSession(id) {
+            const headers = this.refreshToken ? { 'X-Refresh-Token': this.refreshToken } : {};
+            return this._request('/api/admin/sessions/' + id, { method: 'DELETE', headers });
+        }
         adminCleanupExpiredSessions() { return this._request('/api/admin/sessions/cleanup-expired', { method: 'POST' }); }
         adminStats(range = '7d') { return this._request('/api/admin/stats?range=' + encodeURIComponent(range)); }
         adminAudit(params = {}) {
