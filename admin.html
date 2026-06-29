@@ -588,7 +588,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             <div v-if="maintenance.loading && !maintenance.data" class="dash-card p-10 text-center text-gray-400">正在读取维护数据...</div>
 
             <div v-if="maintenance.data" class="space-y-4">
-                <div class="grid grid-cols-2 xl:grid-cols-6 gap-3">
+                <div class="grid grid-cols-2 xl:grid-cols-8 gap-3">
                     <div class="stat-card metric-card">
                         <div class="metric-kicker">Sync Records</div>
                         <div class="stat-num mono">{{ formatNumber(maintenanceSync.records) }}</div>
@@ -618,6 +618,44 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                         <div class="metric-kicker">Temp Files</div>
                         <div class="stat-num mono">{{ formatNumber(maintenanceImages.tempFiles) }}</div>
                         <div class="metric-sub">{{ formatBytes(maintenanceImages.tempBytes) }}</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Database</div>
+                        <div class="stat-num mono">{{ formatBytes(maintenanceDatabase.totalBytes) }}</div>
+                        <div class="metric-sub">{{ maintenanceDatabase.journalMode || '-' }} · {{ formatNumber(maintenanceDatabase.pageCount) }} 页</div>
+                    </div>
+                    <div class="stat-card metric-card">
+                        <div class="metric-kicker">Free Pages</div>
+                        <div class="stat-num mono">{{ formatNumber(maintenanceDatabase.freelistCount) }}</div>
+                        <div class="metric-sub">{{ formatBytes(maintenanceDatabase.freelistBytes) }} 可回收</div>
+                    </div>
+                </div>
+
+                <div class="dash-card p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <div class="dash-card-title">数据库健康</div>
+                            <div class="text-xs text-gray-500 mt-1">{{ maintenanceDatabase.file || 'rphub.db' }} · {{ formatPercent(maintenanceDatabase.freeRatio) }} 空闲页占比</div>
+                        </div>
+                        <span class="storage-pill">{{ formatBytes(maintenanceDatabase.totalBytes) }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                            <div class="text-xs text-gray-500">DB 文件</div>
+                            <div class="font-semibold mono mt-1">{{ formatBytes(maintenanceDatabase.dbBytes) }}</div>
+                        </div>
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                            <div class="text-xs text-gray-500">WAL 日志</div>
+                            <div class="font-semibold mono mt-1">{{ formatBytes(maintenanceDatabase.walBytes) }}</div>
+                        </div>
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                            <div class="text-xs text-gray-500">SHM 文件</div>
+                            <div class="font-semibold mono mt-1">{{ formatBytes(maintenanceDatabase.shmBytes) }}</div>
+                        </div>
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                            <div class="text-xs text-gray-500">页面 / 空闲</div>
+                            <div class="font-semibold mono mt-1">{{ formatNumber(maintenanceDatabase.pageCount) }} / {{ formatNumber(maintenanceDatabase.freelistCount) }}</div>
+                        </div>
                     </div>
                 </div>
 
@@ -695,7 +733,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
 
                 <div class="dash-card p-4">
                     <div class="dash-card-title mb-3">维护操作</div>
-                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
                         <div class="maintenance-action">
                             <div>
                                 <div class="maintenance-action-title">补齐旧同步哈希</div>
@@ -712,6 +750,15 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                             </div>
                             <button class="btn btn-ghost" :disabled="!!maintenance.action || !maintenanceImages.tempFiles" @click="runCleanupImageCacheTemp">
                                 {{ maintenance.action==='temp'?'处理中...':'清理临时文件' }}
+                            </button>
+                        </div>
+                        <div class="maintenance-action">
+                            <div>
+                                <div class="maintenance-action-title">优化数据库</div>
+                                <div class="maintenance-action-copy">执行 SQLite optimize 与 WAL 截断；仅在空闲页较多时自动 VACUUM。</div>
+                            </div>
+                            <button class="btn btn-ghost" :disabled="!!maintenance.action" @click="runOptimizeDatabase">
+                                {{ maintenance.action==='database'?'处理中...':'优化数据库' }}
                             </button>
                         </div>
                     </div>
@@ -880,7 +927,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
 
     <!-- Toast -->
     <div class="fixed bottom-4 right-4 z-50 space-y-2">
-        <div v-for="t in toasts" :key="t.id" class="px-4 py-2 rounded-lg shadow text-sm text-white" :class="{'bg-green-600':t.type==='success','bg-red-600':t.type==='error','bg-gray-800':t.type==='info'}">{{ t.message }}</div>
+        <div v-for="t in toasts" :key="t.id" class="px-4 py-2 rounded-lg shadow text-sm text-white" :class="{'bg-green-600':t.type==='success','bg-red-600':t.type==='error','bg-amber-600':t.type==='warn','bg-gray-800':t.type==='info'}">{{ t.message }}</div>
     </div>
 </div>
 
@@ -1239,6 +1286,10 @@ createApp({
             }
             return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[index]}`;
         }
+        function formatPercent(value) {
+            const n = Number(value || 0) * 100;
+            return `${n >= 10 ? n.toFixed(1) : n.toFixed(2)}%`;
+        }
         function usageTokenPart(type) {
             const total = Number(usageTotals.value.totalTokens || 0);
             if (!total) return 0;
@@ -1327,6 +1378,7 @@ createApp({
         const maintenance = reactive({ loading: false, action: '', data: null });
         const maintenanceSync = computed(() => maintenance.data?.syncStorage || {});
         const maintenanceImages = computed(() => maintenance.data?.imageCache || {});
+        const maintenanceDatabase = computed(() => maintenance.data?.database || {});
         async function loadMaintenance() {
             maintenance.loading = true;
             try { maintenance.data = await sync.adminMaintenanceOverview(); }
@@ -1349,6 +1401,17 @@ createApp({
             try {
                 const r = await sync.adminCleanupImageCacheTemp();
                 toast(`已清理 ${formatNumber(r.removedFiles || 0)} 个临时文件`, 'success');
+                await loadMaintenance();
+            } catch (e) { toast(e.message, 'error'); }
+            finally { maintenance.action = ''; }
+        }
+        async function runOptimizeDatabase() {
+            if (!confirm('确认执行数据库优化？该操作会短暂占用 SQLite，通常几秒内完成。')) return;
+            maintenance.action = 'database';
+            try {
+                const r = await sync.adminOptimizeDatabase();
+                const saved = formatBytes(r.savedBytes || 0);
+                toast(r.vacuumed ? `已优化数据库，回收 ${saved}` : `已优化数据库，WAL 已整理`, r.warnings?.length ? 'warn' : 'success');
                 await loadMaintenance();
             } catch (e) { toast(e.message, 'error'); }
             finally { maintenance.action = ''; }
@@ -1378,6 +1441,7 @@ createApp({
             { value: 'announcement_delete', label: '删除公告' },
             { value: 'admin_rebuild_sync_hashes', label: '补齐同步哈希' },
             { value: 'admin_cleanup_image_cache_temp', label: '清理临时缓存' },
+            { value: 'admin_optimize_database', label: '优化数据库' },
             { value: 'wipe_data', label: '清空账号数据' },
         ];
         const auditActionLabelMap = Object.fromEntries(auditActionOptions.map(option => [option.value, option.label]));
@@ -1494,9 +1558,9 @@ createApp({
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
             usageDetails, usageDetailFilter, loadUsageDetails, clearUsageDetailFilter,
-            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, usageTokenPart,
+            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, formatPercent, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
-            maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
+            maintenance, maintenanceSync, maintenanceImages, maintenanceDatabase, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp, runOptimizeDatabase,
             audit, auditFilter, auditActionOptions, loadAudit, clearAuditFilter, auditActionLabel,
             statusLabel, cardStatusLabel, annTypeLabel, activeLabel, sessionStateLabel, sessionStateClass,
         };

@@ -587,6 +587,9 @@
         adminCleanupImageCacheTemp() {
             return this._request('/api/admin/maintenance/cleanup-image-cache-temp', { method: 'POST' });
         }
+        adminOptimizeDatabase() {
+            return this._request('/api/admin/maintenance/optimize-database', { method: 'POST' });
+        }
     }
 
     window.RPHubServerSync = new ServerSync();

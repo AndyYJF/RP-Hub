@@ -31,6 +31,8 @@ function publicUser(u) {
 
 const IMAGE_CACHE_ROOT = path.resolve(path.dirname(config.dbPath), 'image-cache');
 const IMAGE_CACHE_TEMP_MAX_AGE = 60 * 60 * 1000;
+const DB_VACUUM_FREE_BYTES_THRESHOLD = 8 * 1024 * 1024;
+const DB_VACUUM_FREE_RATIO_THRESHOLD = 0.2;
 
 function hashSerializedValue(text) {
   let hash = 2166136261;
@@ -187,6 +189,98 @@ async function scanImageCache({ cleanupTemps = false } = {}) {
   result.byUser = Array.from(userStats.values()).sort((a, b) => b.bytes - a.bytes).slice(0, 12);
   result.largest = result.largest.sort((a, b) => b.bytes - a.bytes).slice(0, 12);
   return result;
+}
+
+async function fileSize(filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.size || 0;
+  } catch (e) {
+    if (e.code === 'ENOENT') return 0;
+    throw e;
+  }
+}
+
+function pragmaFirstValue(sql, fallback = 0) {
+  try {
+    const row = db.prepare(sql).get();
+    const value = row ? Object.values(row)[0] : fallback;
+    return value ?? fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function getDatabaseStats() {
+  const dbPath = config.dbPath;
+  const walPath = `${dbPath}-wal`;
+  const shmPath = `${dbPath}-shm`;
+  const [dbBytes, walBytes, shmBytes] = await Promise.all([
+    fileSize(dbPath),
+    fileSize(walPath),
+    fileSize(shmPath),
+  ]);
+  const pageSize = Number(pragmaFirstValue('PRAGMA page_size', 0)) || 0;
+  const pageCount = Number(pragmaFirstValue('PRAGMA page_count', 0)) || 0;
+  const freelistCount = Number(pragmaFirstValue('PRAGMA freelist_count', 0)) || 0;
+  const journalMode = String(pragmaFirstValue('PRAGMA journal_mode', '') || '');
+  const freelistBytes = freelistCount * pageSize;
+  const pageBytes = pageCount * pageSize;
+  return {
+    file: path.basename(dbPath),
+    dbBytes,
+    walBytes,
+    shmBytes,
+    totalBytes: dbBytes + walBytes + shmBytes,
+    pageSize,
+    pageCount,
+    freelistCount,
+    freelistBytes,
+    freeRatio: pageBytes ? Math.round((freelistBytes / pageBytes) * 1000) / 1000 : 0,
+    journalMode,
+  };
+}
+
+async function optimizeDatabase() {
+  const before = await getDatabaseStats();
+  const warnings = [];
+  let checkpoint = null;
+  let vacuumed = false;
+
+  try {
+    db.exec('PRAGMA optimize');
+  } catch (e) {
+    warnings.push(`optimize:${e.message || e}`);
+  }
+
+  try {
+    checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+  } catch (e) {
+    warnings.push(`checkpoint:${e.message || e}`);
+  }
+
+  const shouldVacuum = before.freelistBytes >= DB_VACUUM_FREE_BYTES_THRESHOLD
+    || before.freeRatio >= DB_VACUUM_FREE_RATIO_THRESHOLD;
+  if (shouldVacuum) {
+    try {
+      db.exec('VACUUM');
+      vacuumed = true;
+      try { db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get(); } catch (_) {}
+    } catch (e) {
+      warnings.push(`vacuum:${e.message || e}`);
+    }
+  }
+
+  const after = await getDatabaseStats();
+  return {
+    ok: warnings.length === 0,
+    vacuumed,
+    checkpoint,
+    before,
+    after,
+    savedBytes: Math.max(0, Number(before.totalBytes || 0) - Number(after.totalBytes || 0)),
+    warnings,
+  };
 }
 
 function sessionDeviceLabel(userAgent = '') {
@@ -501,11 +595,15 @@ router.get('/stats', (req, res) => {
 router.get('/maintenance/overview', async (req, res, next) => {
   try {
     const syncStorage = getSyncStorageStats();
-    const imageCache = await scanImageCache();
+    const [imageCache, database] = await Promise.all([
+      scanImageCache(),
+      getDatabaseStats(),
+    ]);
     res.json({
       generatedAt: now(),
       syncStorage,
       imageCache,
+      database,
     });
   } catch (e) { next(e); }
 });
@@ -543,6 +641,20 @@ router.post('/maintenance/cleanup-image-cache-temp', async (req, res, next) => {
       removedBytes: result.removedTempBytes,
       imageCache: result,
     });
+  } catch (e) { next(e); }
+});
+
+router.post('/maintenance/optimize-database', async (req, res, next) => {
+  try {
+    const result = await optimizeDatabase();
+    audit(
+      req.user.id,
+      'admin_optimize_database',
+      'sqlite',
+      `${result.savedBytes}:${result.vacuumed ? 'vacuum' : 'checkpoint'}`,
+      req.ip
+    );
+    res.json(result);
   } catch (e) { next(e); }
 });
 
