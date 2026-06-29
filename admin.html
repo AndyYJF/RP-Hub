@@ -52,6 +52,7 @@ tr:hover td{background:#fafbfc}
 .chart-grid{stroke:#e5e7eb;stroke-width:1}
 .chart-line-tokens{fill:none;stroke:#2563eb;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
 .chart-line-requests{fill:none;stroke:#22c55e;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.chart-line-warning{fill:none;stroke:#f59e0b;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 .chart-area{fill:#dbeafe;opacity:.55}
 .legend-dot{width:.55rem;height:.55rem;border-radius:999px;display:inline-block}
 .rank-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;align-items:center}
@@ -151,30 +152,81 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
         <template v-else>
         <!-- 统计 -->
         <section v-if="view==='stats'">
-            <h2 class="text-xl font-bold mb-4">系统统计 <select class="input ml-2 inline-block w-auto text-sm" v-model="statsRange" @change="loadStats">
-                <option value="24h">近 24 小时</option>
-                <option value="7d">近 7 天</option>
-                <option value="30d">近 30 天</option>
-                <option value="all">全部</option>
-            </select></h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" v-if="stats">
-                <div class="stat-card"><div class="stat-num">{{ stats.users.total }}</div><div class="stat-label">总用户</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.users.active }}</div><div class="stat-label">活跃用户</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.users.onlineUsers || 0 }}</div><div class="stat-label">在线用户</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.users.activeSessions || 0 }}</div><div class="stat-label">有效会话</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.users.newUsers }}</div><div class="stat-label">时段新增</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.users.activeInRange }}</div><div class="stat-label">时段登录</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.cards.total }}</div><div class="stat-label">角色卡总数</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.cards.pending }}</div><div class="stat-label">待审核</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.cards.approved }}</div><div class="stat-label">已上架</div></div>
-                <div class="stat-card"><div class="stat-num">{{ stats.cards.totalDownloads }}</div><div class="stat-label">总下载</div></div>
+            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold">系统统计</h2>
+                    <p class="text-xs text-gray-500 mt-1">用户、会话、API 用量和存储健康概览</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <select class="input w-36 text-sm" v-model="statsRange" @change="loadStats">
+                        <option value="24h">近 24 小时</option>
+                        <option value="7d">近 7 天</option>
+                        <option value="30d">近 30 天</option>
+                        <option value="all">全部</option>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" @click="loadStats">刷新</button>
+                </div>
             </div>
-            <div class="card p-4" v-if="stats && stats.series.length">
-                <h3 class="text-sm font-semibold mb-3 text-gray-700">活跃趋势（每日登录 / 新注册）</h3>
-                <div class="flex items-end gap-1 h-32">
-                    <div v-for="(s,i) in stats.series" :key="i" class="flex-1 flex flex-col items-center justify-end group relative">
-                        <div class="w-full bg-primary-200 hover:bg-primary-400 rounded-t" :style="{height:(s.logins/maxLogins*100)+'%'}" :title="`登录 ${s.logins} / 新增 ${s.newUsers}`"></div>
-                        <div class="absolute -top-8 hidden group-hover:block bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10">{{ formatDate(s.date) }}<br>登录 {{ s.logins }} · 新增 {{ s.newUsers }}</div>
+
+            <div v-if="stats" class="space-y-4">
+                <div class="grid grid-cols-2 xl:grid-cols-8 gap-3">
+                    <div class="stat-card metric-card"><div class="metric-kicker">Users</div><div class="stat-num mono">{{ formatNumber(stats.users.total) }}</div><div class="metric-sub">{{ formatNumber(stats.users.newUsers) }} 新增</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Online</div><div class="stat-num mono">{{ formatNumber(stats.users.onlineUsers || 0) }}</div><div class="metric-sub">{{ formatNumber(stats.users.activeSessions || 0) }} 会话</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">API Tokens</div><div class="stat-num mono">{{ compactNumber(statsApiUsage.totalTokens) }}</div><div class="metric-sub">{{ formatNumber(statsApiUsage.requests) }} 请求</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Models</div><div class="stat-num mono">{{ formatNumber(statsApiUsage.activeModels) }}</div><div class="metric-sub">{{ formatNumber(statsApiUsage.activeUsers) }} 用户调用</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Cards</div><div class="stat-num mono">{{ formatNumber(stats.cards.total) }}</div><div class="metric-sub">{{ formatNumber(stats.cards.pending) }} 待审核</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Database</div><div class="stat-num mono">{{ formatBytes(statsStorage.database?.totalBytes) }}</div><div class="metric-sub">{{ formatPercent(statsStorage.database?.freeRatio) }} 空闲</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Image Cache</div><div class="stat-num mono">{{ formatBytes(statsStorage.imageCache?.bytes) }}</div><div class="metric-sub">{{ formatNumber(statsStorage.imageCache?.images) }} 张图</div></div>
+                    <div class="stat-card metric-card"><div class="metric-kicker">Sync Data</div><div class="stat-num mono">{{ formatBytes(statsStorage.syncStorage?.totalBytes) }}</div><div class="metric-sub">{{ formatNumber(statsStorage.syncStorage?.missingHashes) }} 缺 hash</div></div>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                    <div class="dash-card p-4 xl:col-span-2">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <div class="dash-card-title">运行趋势</div>
+                                <div class="text-xs text-gray-500 mt-1">{{ statsRangeLabel }} · 登录、新用户与 API tokens</div>
+                            </div>
+                            <div class="flex items-center gap-3 text-xs text-gray-500">
+                                <span class="inline-flex items-center gap-1"><i class="legend-dot bg-primary-600"></i>Tokens</span>
+                                <span class="inline-flex items-center gap-1"><i class="legend-dot bg-green-500"></i>登录</span>
+                                <span class="inline-flex items-center gap-1"><i class="legend-dot bg-amber-500"></i>新增</span>
+                            </div>
+                        </div>
+                        <div class="chart-wrap">
+                            <svg viewBox="0 0 640 240" class="w-full h-full" preserveAspectRatio="none" role="img">
+                                <line v-for="y in [44,86,128,170,212]" :key="'stats-grid-'+y" x1="24" :y1="y" x2="620" :y2="y" class="chart-grid"></line>
+                                <path v-if="statsApiAreaPath" :d="statsApiAreaPath" class="chart-area"></path>
+                                <path v-if="statsApiTrendPath" :d="statsApiTrendPath" class="chart-line-tokens"></path>
+                                <path v-if="statsLoginTrendPath" :d="statsLoginTrendPath" class="chart-line-requests"></path>
+                                <path v-if="statsNewUserTrendPath" :d="statsNewUserTrendPath" class="chart-line-warning"></path>
+                            </svg>
+                        </div>
+                        <div class="flex justify-between text-[11px] text-gray-400 mt-2">
+                            <span v-for="tick in statsChartTicks" :key="tick.date">{{ formatStatsBucket(tick.date) }}</span>
+                        </div>
+                    </div>
+
+                    <div class="dash-card p-4">
+                        <div class="dash-card-title mb-3">资源健康</div>
+                        <div class="storage-list">
+                            <div class="storage-row">
+                                <div><div class="storage-name">SQLite</div><div class="storage-meta">{{ statsStorage.database?.journalMode || '-' }} · WAL {{ formatBytes(statsStorage.database?.walBytes) }}</div></div>
+                                <div class="storage-size">{{ formatBytes(statsStorage.database?.dbBytes) }}</div>
+                            </div>
+                            <div class="storage-row">
+                                <div><div class="storage-name">图片缓存</div><div class="storage-meta">{{ formatNumber(statsStorage.imageCache?.users) }} 用户 · 临时 {{ formatBytes(statsStorage.imageCache?.tempBytes) }}</div></div>
+                                <div class="storage-size">{{ formatBytes(statsStorage.imageCache?.bytes) }}</div>
+                            </div>
+                            <div class="storage-row">
+                                <div><div class="storage-name">同步存储</div><div class="storage-meta">{{ formatNumber(statsStorage.syncStorage?.records) }} 项</div></div>
+                                <div class="storage-size">{{ formatBytes(statsStorage.syncStorage?.totalBytes) }}</div>
+                            </div>
+                            <div class="storage-row">
+                                <div><div class="storage-name">公共库</div><div class="storage-meta">{{ formatNumber(stats.cards.approved) }} 已上架 · {{ formatNumber(stats.cards.totalDownloads) }} 下载</div></div>
+                                <div class="storage-size">{{ formatNumber(stats.cards.pending) }} 待审</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -946,7 +998,33 @@ createApp({
             try { stats.value = await sync.adminStats(statsRange.value); }
             catch (e) { toast(e.message, 'error'); }
         }
-        const maxLogins = computed(() => Math.max(1, ...(stats.value?.series || []).map(s => s.logins)));
+        const statsSeries = computed(() => stats.value?.series || []);
+        const statsApiUsage = computed(() => stats.value?.apiUsage || {});
+        const statsStorage = computed(() => stats.value?.storage || {});
+        const statsRangeLabel = computed(() => ({
+            '24h': '近 24 小时',
+            '7d': '近 7 天',
+            '30d': '近 30 天',
+            'all': '全部',
+        }[statsRange.value] || '近 7 天'));
+        const statsApiTrendPath = computed(() => buildUsageCurve(statsSeries.value.map(s => s.apiTokens)));
+        const statsLoginTrendPath = computed(() => buildUsageCurve(statsSeries.value.map(s => s.logins)));
+        const statsNewUserTrendPath = computed(() => buildUsageCurve(statsSeries.value.map(s => s.newUsers)));
+        const statsApiAreaPath = computed(() => buildUsageArea(statsSeries.value.map(s => s.apiTokens)));
+        const statsChartTicks = computed(() => {
+            const series = statsSeries.value;
+            if (series.length <= 5) return series;
+            const ticks = [];
+            for (let i = 0; i < 5; i++) {
+                ticks.push(series[Math.round((series.length - 1) * i / 4)]);
+            }
+            return ticks.filter(Boolean);
+        });
+        function formatStatsBucket(ts) {
+            const d = new Date(ts);
+            if (stats.value?.bucketMs === 3600000) return `${String(d.getHours()).padStart(2, '0')}:00`;
+            return `${d.getMonth() + 1}/${d.getDate()}`;
+        }
 
         // Users
         const users = reactive({ list: [], total: 0, page: 1, pageSize: 50 });
@@ -1570,7 +1648,9 @@ createApp({
 
         return {
             sync, view, toasts, setView, goApp, goLogin, doLogout,
-            stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime, formatRelativeTime,
+            stats, statsRange, loadStats, statsApiUsage, statsStorage, statsRangeLabel,
+            statsApiTrendPath, statsLoginTrendPath, statsNewUserTrendPath, statsApiAreaPath,
+            statsChartTicks, formatStatsBucket, formatDate, formatDateTime, formatRelativeTime,
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, logoutUser, deleteUser, resetUserApiUsage,
             sessions, sessionFilter, sessionStats, loadSessions, clearSessionFilter, revokeSession, cleanupExpiredSessions,
             lib, libFilter, loadLibrary, clearLibraryFilter, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,

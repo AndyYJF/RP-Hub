@@ -556,7 +556,8 @@ router.post('/sessions/cleanup-expired', (req, res, next) => {
 });
 
 // ---------- Statistics ----------
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res, next) => {
+  try {
   const range = (req.query.range || '7d').toString();
   const nowTs = now();
   const ranges = { '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, 'all': Infinity };
@@ -577,43 +578,104 @@ router.get('/stats', (req, res) => {
   const totalDownloads = db.prepare('SELECT COALESCE(SUM(download_count),0) as s FROM library_cards').get().s;
 
   const announcements = db.prepare('SELECT COUNT(*) as c FROM announcements WHERE active = 1').get().c;
+  const apiTotals = db.prepare(
+    `SELECT COALESCE(SUM(prompt_tokens),0) as prompt,
+            COALESCE(SUM(completion_tokens),0) as completion,
+            COALESCE(SUM(total_tokens),0) as total,
+            COUNT(*) as requests,
+            COUNT(DISTINCT user_id) as users,
+            COUNT(DISTINCT NULLIF(model, '')) as models
+     FROM api_usage WHERE created_at >= ?`
+  ).get(since);
 
-  // Daily series (login + new users) — aggregated instead of per-day queries
+  // Time series is bucketed in SQL to keep the dashboard light.
   const dayMs = 86400000;
-  const days = Math.min(span === Infinity ? 30 : Math.ceil(span / dayMs), 90);
-  const seriesStart = Math.floor((nowTs - (days - 1) * dayMs) / dayMs) * dayMs;
-  const seriesEndExclusive = Math.floor(nowTs / dayMs) * dayMs + dayMs;
+  const bucketMs = range === '24h' ? 3600000 : dayMs;
+  const bucketCount = range === '24h'
+    ? 24
+    : Math.min(span === Infinity ? 30 : Math.ceil(span / dayMs), 90);
+  const seriesStart = Math.floor((nowTs - (bucketCount - 1) * bucketMs) / bucketMs) * bucketMs;
+  const seriesEndExclusive = Math.floor(nowTs / bucketMs) * bucketMs + bucketMs;
 
-  const newUsersByDay = db.prepare(
-    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS day, COUNT(*) AS c
+  const newUsersByBucket = db.prepare(
+    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS bucket, COUNT(*) AS c
      FROM users WHERE created_at >= ? AND created_at < ?
-     GROUP BY day`
-  ).all(dayMs, dayMs, seriesStart, seriesEndExclusive);
-  const loginsByDay = db.prepare(
-    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS day, COUNT(DISTINCT user_id) AS c
+     GROUP BY bucket`
+  ).all(bucketMs, bucketMs, seriesStart, seriesEndExclusive);
+  const loginsByBucket = db.prepare(
+    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS bucket, COUNT(DISTINCT user_id) AS c
      FROM audit_logs WHERE action = 'login' AND created_at >= ? AND created_at < ?
-     GROUP BY day`
-  ).all(dayMs, dayMs, seriesStart, seriesEndExclusive);
+     GROUP BY bucket`
+  ).all(bucketMs, bucketMs, seriesStart, seriesEndExclusive);
+  const apiUsageByBucket = db.prepare(
+    `SELECT (CAST(created_at / ? AS INTEGER) * ?) AS bucket,
+            COALESCE(SUM(total_tokens), 0) AS tokens,
+            COUNT(*) AS requests
+     FROM api_usage WHERE created_at >= ? AND created_at < ?
+     GROUP BY bucket`
+  ).all(bucketMs, bucketMs, seriesStart, seriesEndExclusive);
 
-  const newUsersMap = Object.fromEntries(newUsersByDay.map(r => [r.day, r.c]));
-  const loginsMap = Object.fromEntries(loginsByDay.map(r => [r.day, r.c]));
+  const newUsersMap = Object.fromEntries(newUsersByBucket.map(r => [r.bucket, r.c]));
+  const loginsMap = Object.fromEntries(loginsByBucket.map(r => [r.bucket, r.c]));
+  const apiMap = Object.fromEntries(apiUsageByBucket.map(r => [r.bucket, r]));
   const series = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const dayStartDay = Math.floor((nowTs - i * dayMs) / dayMs) * dayMs;
+  for (let i = bucketCount - 1; i >= 0; i--) {
+    const bucketStart = Math.floor((nowTs - i * bucketMs) / bucketMs) * bucketMs;
+    const apiBucket = apiMap[bucketStart] || {};
     series.push({
-      date: dayStartDay,
-      newUsers: newUsersMap[dayStartDay] || 0,
-      logins: loginsMap[dayStartDay] || 0,
+      date: bucketStart,
+      newUsers: newUsersMap[bucketStart] || 0,
+      logins: loginsMap[bucketStart] || 0,
+      apiTokens: Number(apiBucket.tokens || 0),
+      apiRequests: Number(apiBucket.requests || 0),
     });
   }
 
+  const [database, imageCache] = await Promise.all([
+    getDatabaseStats(),
+    scanImageCache(),
+  ]);
+  const syncStorage = getSyncStorageStats();
+
   res.json({
     range,
+    bucketMs,
     users: { total: users, active: activeUsers, admins, banned, newUsers, activeInRange, ...sessionStats },
     cards: { total: cards, pending: pendingCards, approved: approvedCards, totalDownloads },
+    apiUsage: {
+      promptTokens: Number(apiTotals.prompt || 0),
+      completionTokens: Number(apiTotals.completion || 0),
+      totalTokens: Number(apiTotals.total || 0),
+      requests: Number(apiTotals.requests || 0),
+      activeUsers: Number(apiTotals.users || 0),
+      activeModels: Number(apiTotals.models || 0),
+    },
+    storage: {
+      database: {
+        totalBytes: database.totalBytes,
+        dbBytes: database.dbBytes,
+        walBytes: database.walBytes,
+        freelistBytes: database.freelistBytes,
+        freeRatio: database.freeRatio,
+        journalMode: database.journalMode,
+      },
+      imageCache: {
+        images: imageCache.images,
+        users: imageCache.users,
+        bytes: imageCache.bytes,
+        tempFiles: imageCache.tempFiles,
+        tempBytes: imageCache.tempBytes,
+      },
+      syncStorage: {
+        records: syncStorage.records,
+        totalBytes: syncStorage.totalBytes,
+        missingHashes: syncStorage.missingHashes,
+      },
+    },
     announcements,
     series,
   });
+  } catch (e) { next(e); }
 });
 
 // ---------- Maintenance / storage overview ----------
