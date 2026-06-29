@@ -62,7 +62,6 @@ const migrations = [
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','banned','disabled')),
     display_name TEXT DEFAULT '',
     avatar TEXT DEFAULT '',
-    api_quota INTEGER NOT NULL DEFAULT 0,
     api_key TEXT DEFAULT '',
     created_at INTEGER NOT NULL,
     last_login_at INTEGER,
@@ -138,7 +137,7 @@ const migrations = [
     created_at INTEGER NOT NULL
   );`,
 
-  // v1: api usage (for new-api integration / quota tracking)
+  // v1: api usage (for new-api integration / analytics)
   `CREATE TABLE IF NOT EXISTS api_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

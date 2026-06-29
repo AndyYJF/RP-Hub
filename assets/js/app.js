@@ -719,7 +719,7 @@ createApp({
             temperature: 1.0,
             autoFetchModels: true,
             stream: true,
-            useChatProxy: false, // 开启后对话请求经后端代理转发，记录 token 用量
+            useChatProxy: true, // 开启后对话请求经后端代理转发，记录 token 用量
             activeToolAggressiveness: 'adaptive',
             activeToolAggressivenessVersion: 2,
 

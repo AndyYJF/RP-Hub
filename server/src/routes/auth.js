@@ -54,7 +54,6 @@ function publicUser(u) {
     status: u.status,
     displayName: u.display_name,
     avatar: u.avatar,
-    apiQuota: u.api_quota,
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at,
   };

@@ -3,7 +3,6 @@ import { authRequired } from '../middleware/auth.js';
 import { proxyLimiter } from '../middleware/proxyLimiter.js';
 import { db, now } from '../db.js';
 import { assertSafeProxyUrl, safeProxyFetch } from '../utils/safeUrl.js';
-import { assertApiQuota } from '../utils/proxyQuota.js';
 
 const router = Router();
 router.use(authRequired);
@@ -18,7 +17,6 @@ router.post('/chat', async (req, res, next) => {
     if (!targetUrl || !apiKey) {
       return res.status(400).json({ error: '缺少 targetUrl / apiKey' });
     }
-    assertApiQuota(req.user.id);
     const safeTargetUrl = assertSafeProxyUrl(targetUrl);
 
     const userId = req.user.id;

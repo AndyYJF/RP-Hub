@@ -71,6 +71,40 @@ function hashMessageValue(message) {
   return hashSerializedValue(serialize(message));
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isForwardText(current, next) {
+  const currentText = String(current || '');
+  const nextText = String(next || '');
+  return nextText === currentText || nextText.startsWith(currentText);
+}
+
+function isForwardMessageUpdate(currentMessage, nextMessage) {
+  if (hashMessageValue(currentMessage) === hashMessageValue(nextMessage)) return true;
+  if (!isPlainObject(currentMessage) || !isPlainObject(nextMessage)) return false;
+  const currentId = String(currentMessage.id || '');
+  const nextId = String(nextMessage.id || '');
+  if (!currentId || !nextId || currentId !== nextId) return false;
+  if (String(currentMessage.role || '') !== String(nextMessage.role || '')) return false;
+  return isForwardText(currentMessage.content, nextMessage.content)
+    && isForwardText(currentMessage.reasoning, nextMessage.reasoning);
+}
+
+function isChatForwardUpdate(currentValue, nextValue) {
+  if (!Array.isArray(currentValue) || !Array.isArray(nextValue)) return false;
+  if (currentValue.length > nextValue.length) return false;
+  for (let i = 0; i < currentValue.length; i++) {
+    const currentMessage = currentValue[i];
+    const nextMessage = nextValue[i];
+    if (hashMessageValue(currentMessage) === hashMessageValue(nextMessage)) continue;
+    if (i === currentValue.length - 1 && isForwardMessageUpdate(currentMessage, nextMessage)) continue;
+    return false;
+  }
+  return true;
+}
+
 function deserialize(text) {
   if (text === null || text === undefined) return undefined;
   try { return JSON.parse(text); } catch (_) { return text; }
@@ -292,7 +326,10 @@ router.put('/scoped/chat/:id/conditional', (req, res, next) => {
       const sameBase = current
         ? currentUpdatedAt === baseUpdatedAt && (!baseHash || !currentHash || currentHash === baseHash)
         : !baseUpdatedAt;
-      if (!sameBase) {
+      const canForward = !sameBase && current
+        ? isChatForwardUpdate(deserialize(current.value), value)
+        : false;
+      if (!sameBase && !canForward) {
         return res.status(409).json({
           error: 'CHAT_SYNC_CONFLICT',
           conflict: true,
