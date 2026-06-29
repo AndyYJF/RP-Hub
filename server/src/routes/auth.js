@@ -55,7 +55,6 @@ function publicUser(u) {
     displayName: u.display_name,
     avatar: u.avatar,
     apiQuota: u.api_quota,
-    apiKey: u.api_key ? u.api_key.slice(0, 4) + '****' : '',
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at,
   };
@@ -162,7 +161,7 @@ router.get('/me', authRequired, (req, res) => {
 // ---------- Update profile (self) ----------
 router.patch('/me', authRequired, (req, res, next) => {
   try {
-    const { displayName, avatar, password, oldPassword, apiKey } = req.body || {};
+    const { displayName, avatar, password, oldPassword } = req.body || {};
     const sets = [];
     const vals = [];
     if (typeof displayName === 'string' && displayName.length <= 64) {
@@ -170,9 +169,6 @@ router.patch('/me', authRequired, (req, res, next) => {
     }
     if (typeof avatar === 'string' && avatar.length < 2 * 1024 * 1024) {
       sets.push('avatar = ?'); vals.push(avatar);
-    }
-    if (typeof apiKey === 'string' && apiKey.length <= 256) {
-      sets.push('api_key = ?'); vals.push(apiKey);
     }
     if (typeof password === 'string' && validPassword(password)) {
       const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);

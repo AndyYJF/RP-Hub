@@ -21,7 +21,6 @@ function publicUser(u) {
     displayName: u.display_name,
     avatar: u.avatar,
     apiQuota: u.api_quota,
-    apiKey: u.api_key ? u.api_key.slice(0, 4) + '****' : '',
     activeSessions: Number(u.active_sessions || 0),
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at,
@@ -378,7 +377,7 @@ router.patch('/users/:id', (req, res, next) => {
     const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!target) return res.status(404).json({ error: '用户不存在' });
 
-    const { role, status, displayName, apiQuota, apiKey, bannedReason, password } = req.body || {};
+    const { role, status, displayName, apiQuota, bannedReason, password } = req.body || {};
     const sets = [];
     const vals = [];
 
@@ -401,9 +400,6 @@ router.patch('/users/:id', (req, res, next) => {
     }
     if (typeof apiQuota === 'number' && apiQuota >= 0 && apiQuota <= 1e12) {
       sets.push('api_quota = ?'); vals.push(apiQuota);
-    }
-    if (typeof apiKey === 'string' && apiKey.length <= 256) {
-      sets.push('api_key = ?'); vals.push(apiKey);
     }
     if (typeof password === 'string' && password.length >= 6 && password.length <= 128) {
       sets.push('password_hash = ?'); vals.push(bcrypt.hashSync(password, 10));
