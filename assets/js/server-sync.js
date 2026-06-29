@@ -534,6 +534,7 @@
         adminUpdateUser(id, patch) { return this._request('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify(patch) }); }
         adminDeleteUser(id) { return this._request('/api/admin/users/' + id, { method: 'DELETE' }); }
         adminLogoutUser(id) { return this._request('/api/admin/users/' + id + '/logout', { method: 'POST' }); }
+        adminResetUserApiUsage(id) { return this._request('/api/admin/users/' + id + '/api-usage/reset', { method: 'POST' }); }
         adminSessions(params = {}) {
             const qs = new URLSearchParams();
             for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, v);

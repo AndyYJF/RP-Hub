@@ -13,6 +13,8 @@ router.use(adminRequired);
 
 function publicUser(u) {
   if (!u) return null;
+  const apiQuota = Number(u.api_quota || 0);
+  const apiUsedTokens = Number(u.api_used_tokens || 0);
   return {
     id: u.id,
     username: u.username,
@@ -20,7 +22,10 @@ function publicUser(u) {
     status: u.status,
     displayName: u.display_name,
     avatar: u.avatar,
-    apiQuota: u.api_quota,
+    apiQuota,
+    apiUsedTokens,
+    apiRemainingTokens: apiQuota > 0 ? Math.max(0, apiQuota - apiUsedTokens) : null,
+    apiUsageRequests: Number(u.api_usage_requests || 0),
     activeSessions: Number(u.active_sessions || 0),
     createdAt: u.created_at,
     lastLoginAt: u.last_login_at,
@@ -341,6 +346,16 @@ function getSessionStats(nowTs = now()) {
   };
 }
 
+function getUserWithUsage(id) {
+  return db.prepare(
+    `SELECT u.*,
+            (SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage au WHERE au.user_id = u.id) AS api_used_tokens,
+            (SELECT COUNT(*) FROM api_usage au WHERE au.user_id = u.id) AS api_usage_requests
+     FROM users u
+     WHERE u.id = ?`
+  ).get(id);
+}
+
 // ---------- User management ----------
 router.get('/users', (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
@@ -350,25 +365,39 @@ router.get('/users', (req, res) => {
   const role = (req.query.role || '').toString();
   let where = 'WHERE 1=1';
   const params = [];
-  if (q) { where += ` AND (username LIKE ? OR display_name LIKE ?)`; params.push(`%${q}%`, `%${q}%`); }
-  if (status) { where += ` AND status = ?`; params.push(status); }
-  if (role) { where += ` AND role = ?`; params.push(role); }
+  if (q) { where += ` AND (u.username LIKE ? OR u.display_name LIKE ?)`; params.push(`%${q}%`, `%${q}%`); }
+  if (status) { where += ` AND u.status = ?`; params.push(status); }
+  if (role) { where += ` AND u.role = ?`; params.push(role); }
 
-  const total = db.prepare(`SELECT COUNT(*) as c FROM users ${where}`).get(...params).c;
+  const total = db.prepare(`SELECT COUNT(*) as c FROM users u ${where}`).get(...params).c;
   const rows = db.prepare(
     `SELECT u.*, (
      SELECT COUNT(*) FROM refresh_tokens rt WHERE rt.user_id = u.id AND rt.expires_at > ?
-     ) AS active_sessions
-     FROM users u ${where} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
+     ) AS active_sessions,
+     (SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage au WHERE au.user_id = u.id) AS api_used_tokens,
+     (SELECT COUNT(*) FROM api_usage au WHERE au.user_id = u.id) AS api_usage_requests
+     FROM users u
+     ${where} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
   ).all(now(), ...params, pageSize, (page - 1) * pageSize);
 
   res.json({ total, page, pageSize, users: rows.map(publicUser) });
 });
 
 router.get('/users/:id', (req, res) => {
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(parseInt(req.params.id, 10));
+  const u = getUserWithUsage(parseInt(req.params.id, 10));
   if (!u) return res.status(404).json({ error: '用户不存在' });
   res.json({ user: publicUser(u) });
+});
+
+router.post('/users/:id/api-usage/reset', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!target) return res.status(404).json({ error: '用户不存在' });
+    const info = db.prepare('DELETE FROM api_usage WHERE user_id = ?').run(id);
+    audit(req.user.id, 'admin_reset_user_api_usage', target.username, String(info.changes || 0), req.ip);
+    res.json({ ok: true, deleted: info.changes || 0, user: publicUser(getUserWithUsage(id)) });
+  } catch (e) { next(e); }
 });
 
 router.patch('/users/:id', (req, res, next) => {
@@ -410,7 +439,7 @@ router.patch('/users/:id', (req, res, next) => {
     vals.push(id);
     db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
     audit(req.user.id, 'admin_update_user', target.username, sets.join(','), req.ip);
-    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    const updated = getUserWithUsage(id);
     res.json({ ok: true, user: publicUser(updated) });
   } catch (e) { next(e); }
 });
@@ -459,7 +488,7 @@ router.post('/users', (req, res, next) => {
        VALUES (?, ?, ?, 'active', ?, ?)`
     ).run(u, bcrypt.hashSync(password, 10), role === 'admin' ? 'admin' : 'user', (displayName || '').toString().slice(0, 64), now());
     audit(req.user.id, 'admin_create_user', u, role || 'user', req.ip);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    const user = getUserWithUsage(info.lastInsertRowid);
     res.json({ ok: true, user: publicUser(user) });
   } catch (e) { next(e); }
 });

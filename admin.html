@@ -206,12 +206,17 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                             <td>{{ u.displayName || '-' }}</td>
                             <td><span class="tag" :class="u.role==='admin'?'tag-admin':'tag-user'">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
                             <td><span class="tag" :class="'tag-'+u.status">{{ statusLabel(u.status) }}</span></td>
-                            <td class="text-xs text-gray-700 mono">{{ formatQuota(u.apiQuota) }}</td>
+                            <td>
+                                <div class="text-xs text-gray-700 mono">{{ quotaUsageLabel(u) }}</div>
+                                <div class="text-[11px] text-gray-400 mono">{{ quotaSubLabel(u) }}</div>
+                                <div class="rank-bar mt-1" v-if="Number(u.apiQuota || 0) > 0"><span :style="{width: quotaUsagePercent(u) + '%'}"></span></div>
+                            </td>
                             <td class="mono">{{ formatNumber(u.activeSessions) }}</td>
                             <td class="text-gray-500 text-xs">{{ formatDateTime(u.createdAt) }}</td>
                             <td class="text-gray-500 text-xs">{{ u.lastLoginAt?formatDateTime(u.lastLoginAt):'从未' }}</td>
                             <td>
                                 <button class="btn btn-ghost btn-sm" @click="openEditUser(u)">编辑</button>
+                                <button class="btn btn-ghost btn-sm" @click="resetUserApiUsage(u)" v-if="u.apiUsedTokens">重置用量</button>
                                 <button class="btn btn-ghost btn-sm" @click="logoutUser(u)" v-if="u.id!==sync.user.id && u.activeSessions">下线</button>
                                 <button class="btn btn-sm" :class="u.status==='active'?'btn-danger':'btn-primary'" @click="toggleBan(u)" v-if="u.id!==sync.user.id">{{ u.status==='active'?'封禁':'解封' }}</button>
                                 <button class="btn btn-danger btn-sm" @click="deleteUser(u)" v-if="u.id!==sync.user.id">删</button>
@@ -1020,6 +1025,17 @@ createApp({
             try { await sync.adminDeleteUser(u.id); toast('已删除', 'success'); loadUsers(users.page); }
             catch (e) { toast(e.message, 'error'); }
         }
+        async function resetUserApiUsage(u) {
+            if (!u || !Number(u.apiUsedTokens || 0)) return;
+            if (!confirm(`确认重置用户 ${u.username} 的 API 用量？这会删除该用户的 API 用量明细。`)) return;
+            try {
+                const r = await sync.adminResetUserApiUsage(u.id);
+                toast(`已清除 ${formatNumber(r.deleted || 0)} 条用量记录`, 'success');
+                await loadUsers(users.page);
+                if (usageSummary.value) loadUsageSummary();
+                if (usageDetails.list.length) loadUsageDetails(usageDetails.page);
+            } catch (e) { toast(e.message, 'error'); }
+        }
 
         // Sessions
         const sessions = reactive({ list: [], total: 0, page: 1, pageSize: 50, loading: false, action: '', stats: {} });
@@ -1255,6 +1271,25 @@ createApp({
             const quota = Number(value || 0);
             return quota > 0 ? `${compactNumber(quota)} tokens` : '不限额';
         }
+        function quotaUsageLabel(u) {
+            const used = Number(u?.apiUsedTokens || 0);
+            const quota = Number(u?.apiQuota || 0);
+            if (quota > 0) return `${compactNumber(used)} / ${compactNumber(quota)}`;
+            return `已用 ${compactNumber(used)} / 不限额`;
+        }
+        function quotaSubLabel(u) {
+            const quota = Number(u?.apiQuota || 0);
+            const used = Number(u?.apiUsedTokens || 0);
+            const requests = Number(u?.apiUsageRequests || 0);
+            if (quota > 0) return `剩余 ${compactNumber(Math.max(0, quota - used))} · ${formatNumber(requests)} 次`;
+            return `${formatNumber(requests)} 次请求`;
+        }
+        function quotaUsagePercent(u) {
+            const quota = Number(u?.apiQuota || 0);
+            if (quota <= 0) return 0;
+            const used = Number(u?.apiUsedTokens || 0);
+            return Math.max(2, Math.min(100, Math.round(used / quota * 100)));
+        }
         function compactNumber(value) {
             return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
         }
@@ -1416,6 +1451,7 @@ createApp({
             { value: 'library_admin_delete', label: '删除角色卡' },
             { value: 'admin_create_user', label: '创建用户' },
             { value: 'admin_update_user', label: '更新用户' },
+            { value: 'admin_reset_user_api_usage', label: '重置用户用量' },
             { value: 'admin_logout_user', label: '清除登录态' },
             { value: 'admin_logout_session', label: '下线单个会话' },
             { value: 'admin_cleanup_sessions', label: '清理过期会话' },
@@ -1535,14 +1571,14 @@ createApp({
         return {
             sync, view, toasts, setView, goApp, goLogin, doLogout,
             stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime, formatRelativeTime,
-            users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, logoutUser, deleteUser,
+            users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, logoutUser, deleteUser, resetUserApiUsage,
             sessions, sessionFilter, sessionStats, loadSessions, clearSessionFilter, revokeSession, cleanupExpiredSessions,
             lib, libFilter, loadLibrary, clearLibraryFilter, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
             usageSummary, usageRange, usageTotals, usageRangeLabel, usageTokenTrendPath, usageRequestTrendPath,
             usageDetails, usageDetailFilter, loadUsageDetails, clearUsageDetailFilter,
-            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, compactNumber, formatBytes, formatPercent, usageTokenPart,
+            usageTokenAreaPath, usageChartTicks, loadUsageSummary, formatNumber, formatQuota, quotaUsageLabel, quotaSubLabel, quotaUsagePercent, compactNumber, formatBytes, formatPercent, usageTokenPart,
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             maintenance, maintenanceSync, maintenanceImages, maintenanceDatabase, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp, runOptimizeDatabase,
             audit, auditFilter, auditActionOptions, loadAudit, clearAuditFilter, auditActionLabel,
