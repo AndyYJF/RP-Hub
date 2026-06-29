@@ -534,6 +534,13 @@
         adminUpdateUser(id, patch) { return this._request('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify(patch) }); }
         adminDeleteUser(id) { return this._request('/api/admin/users/' + id, { method: 'DELETE' }); }
         adminLogoutUser(id) { return this._request('/api/admin/users/' + id + '/logout', { method: 'POST' }); }
+        adminSessions(params = {}) {
+            const qs = new URLSearchParams();
+            for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+            return this._request('/api/admin/sessions' + (qs.toString() ? '?' + qs.toString() : ''));
+        }
+        adminLogoutSession(id) { return this._request('/api/admin/sessions/' + id, { method: 'DELETE' }); }
+        adminCleanupExpiredSessions() { return this._request('/api/admin/sessions/cleanup-expired', { method: 'POST' }); }
         adminStats(range = '7d') { return this._request('/api/admin/stats?range=' + encodeURIComponent(range)); }
         adminAudit(params = {}) {
             const qs = new URLSearchParams();

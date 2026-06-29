@@ -153,6 +153,14 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS idx_api_usage_user ON api_usage(user_id);
    CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);`,
   `ALTER TABLE user_data ADD COLUMN value_hash TEXT DEFAULT '';`,
+  `ALTER TABLE refresh_tokens ADD COLUMN ip TEXT DEFAULT '';`,
+  `ALTER TABLE refresh_tokens ADD COLUMN user_agent TEXT DEFAULT '';`,
+  `ALTER TABLE refresh_tokens ADD COLUMN last_seen_at INTEGER;`,
+  `CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_expires ON refresh_tokens(user_id, expires_at);
+   CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
+   CREATE INDEX IF NOT EXISTS idx_api_usage_user_created ON api_usage(user_id, created_at);
+   CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created ON audit_logs(action, created_at);
+   CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at);`,
 ];
 
 // Simple migration runner based on PRAGMA user_version

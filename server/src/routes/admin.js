@@ -188,6 +188,57 @@ async function scanImageCache({ cleanupTemps = false } = {}) {
   return result;
 }
 
+function sessionDeviceLabel(userAgent = '') {
+  const ua = String(userAgent || '');
+  const browser = /Edg\//.test(ua) ? 'Edge'
+    : /Firefox\//.test(ua) ? 'Firefox'
+      : /CriOS\//.test(ua) ? 'Chrome iOS'
+        : /Chrome\//.test(ua) ? 'Chrome'
+          : /Safari\//.test(ua) ? 'Safari'
+            : ua ? 'Other' : 'Unknown';
+  const os = /Windows/.test(ua) ? 'Windows'
+    : /Android/.test(ua) ? 'Android'
+      : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+        : /Mac OS X/.test(ua) ? 'macOS'
+          : /Linux/.test(ua) ? 'Linux' : '';
+  return os ? `${browser} · ${os}` : browser;
+}
+
+function publicSession(row, nowTs, currentUserId) {
+  const expiresAt = Number(row.expires_at || 0);
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || '',
+    displayName: row.display_name || '',
+    role: row.role || 'user',
+    userStatus: row.status || '',
+    ip: row.ip || '',
+    userAgent: row.user_agent || '',
+    device: sessionDeviceLabel(row.user_agent),
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at || row.created_at,
+    expiresAt,
+    state: expiresAt > nowTs ? 'active' : 'expired',
+    isSelf: row.user_id === currentUserId,
+  };
+}
+
+function getSessionStats(nowTs = now()) {
+  const stats = db.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END), 0) AS active_sessions,
+       COALESCE(SUM(CASE WHEN expires_at <= ? THEN 1 ELSE 0 END), 0) AS expired_sessions,
+       COUNT(DISTINCT CASE WHEN expires_at > ? THEN user_id END) AS online_users
+     FROM refresh_tokens`
+  ).get(nowTs, nowTs, nowTs);
+  return {
+    activeSessions: Number(stats.active_sessions || 0),
+    expiredSessions: Number(stats.expired_sessions || 0),
+    onlineUsers: Number(stats.online_users || 0),
+  };
+}
+
 // ---------- User management ----------
 router.get('/users', (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
@@ -314,6 +365,64 @@ router.post('/users', (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- Session management ----------
+router.get('/sessions', (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize || '50', 10)));
+  const q = (req.query.q || '').toString().trim();
+  const status = (req.query.status || 'active').toString();
+  const userId = parseInt(req.query.userId || '0', 10);
+  const nowTs = now();
+  const whereParts = ['1=1'];
+  const params = [];
+  if (status === 'active') { whereParts.push('rt.expires_at > ?'); params.push(nowTs); }
+  if (status === 'expired') { whereParts.push('rt.expires_at <= ?'); params.push(nowTs); }
+  if (Number.isFinite(userId) && userId > 0) { whereParts.push('rt.user_id = ?'); params.push(userId); }
+  if (q) {
+    const like = `%${q}%`;
+    whereParts.push('(u.username LIKE ? OR u.display_name LIKE ? OR rt.ip LIKE ? OR rt.user_agent LIKE ?)');
+    params.push(like, like, like, like);
+  }
+  const where = `WHERE ${whereParts.join(' AND ')}`;
+  const baseSql = `FROM refresh_tokens rt LEFT JOIN users u ON u.id = rt.user_id ${where}`;
+  const total = db.prepare(`SELECT COUNT(*) AS c ${baseSql}`).get(...params).c;
+  const rows = db.prepare(
+    `SELECT rt.*, u.username, u.display_name, u.role, u.status
+     ${baseSql}
+     ORDER BY rt.last_seen_at DESC, rt.created_at DESC
+     LIMIT ? OFFSET ?`
+  ).all(...params, pageSize, (page - 1) * pageSize);
+  res.json({
+    total,
+    page,
+    pageSize,
+    stats: getSessionStats(nowTs),
+    sessions: rows.map(row => publicSession(row, nowTs, req.user.id)),
+  });
+});
+
+router.delete('/sessions/:id', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const session = db.prepare(
+      `SELECT rt.*, u.username FROM refresh_tokens rt LEFT JOIN users u ON u.id = rt.user_id WHERE rt.id = ?`
+    ).get(id);
+    if (!session) return res.status(404).json({ error: '会话不存在' });
+    if (session.user_id === req.user.id) return res.status(400).json({ error: '不能在后台强制下线自己的会话' });
+    const info = db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(id);
+    audit(req.user.id, 'admin_logout_session', session.username || String(session.user_id), `${id}:${session.ip || ''}`, req.ip);
+    res.json({ ok: true, revoked: info.changes || 0 });
+  } catch (e) { next(e); }
+});
+
+router.post('/sessions/cleanup-expired', (req, res, next) => {
+  try {
+    const info = db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(now());
+    audit(req.user.id, 'admin_cleanup_sessions', 'refresh_tokens', String(info.changes || 0), req.ip);
+    res.json({ ok: true, removed: info.changes || 0 });
+  } catch (e) { next(e); }
+});
+
 // ---------- Statistics ----------
 router.get('/stats', (req, res) => {
   const range = (req.query.range || '7d').toString();
@@ -328,6 +437,7 @@ router.get('/stats', (req, res) => {
   const banned = db.prepare("SELECT COUNT(*) as c FROM users WHERE status = 'banned'").get().c;
   const newUsers = db.prepare('SELECT COUNT(*) as c FROM users WHERE created_at >= ?').get(since).c;
   const activeInRange = db.prepare('SELECT COUNT(DISTINCT user_id) as c FROM audit_logs WHERE action = ? AND created_at >= ?').get('login', since).c;
+  const sessionStats = getSessionStats(nowTs);
 
   const cards = db.prepare('SELECT COUNT(*) as c FROM library_cards').get().c;
   const pendingCards = db.prepare("SELECT COUNT(*) as c FROM library_cards WHERE status = 'pending'").get().c;
@@ -367,7 +477,7 @@ router.get('/stats', (req, res) => {
 
   res.json({
     range,
-    users: { total: users, active: activeUsers, admins, banned, newUsers, activeInRange },
+    users: { total: users, active: activeUsers, admins, banned, newUsers, activeInRange, ...sessionStats },
     cards: { total: cards, pending: pendingCards, approved: approvedCards, totalDownloads },
     announcements,
     series,

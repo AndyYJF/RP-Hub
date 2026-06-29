@@ -128,6 +128,7 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
         <nav class="flex-1 space-y-1">
             <div class="nav-item" :class="{active:view==='stats'}" @click="setView('stats')">📊 系统统计</div>
             <div class="nav-item" :class="{active:view==='users'}" @click="setView('users')">👥 用户管理</div>
+            <div class="nav-item" :class="{active:view==='sessions'}" @click="setView('sessions')">● 在线会话</div>
             <div class="nav-item" :class="{active:view==='library'}" @click="setView('library')">🎴 角色卡审核</div>
             <div class="nav-item" :class="{active:view==='announcements'}" @click="setView('announcements')">📢 公告管理</div>
             <div class="nav-item" :class="{active:view==='apiusage'}" @click="setView('apiusage')">⚡ API 用量</div>
@@ -159,6 +160,8 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" v-if="stats">
                 <div class="stat-card"><div class="stat-num">{{ stats.users.total }}</div><div class="stat-label">总用户</div></div>
                 <div class="stat-card"><div class="stat-num">{{ stats.users.active }}</div><div class="stat-label">活跃用户</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.users.onlineUsers || 0 }}</div><div class="stat-label">在线用户</div></div>
+                <div class="stat-card"><div class="stat-num">{{ stats.users.activeSessions || 0 }}</div><div class="stat-label">有效会话</div></div>
                 <div class="stat-card"><div class="stat-num">{{ stats.users.newUsers }}</div><div class="stat-label">时段新增</div></div>
                 <div class="stat-card"><div class="stat-num">{{ stats.users.activeInRange }}</div><div class="stat-label">时段登录</div></div>
                 <div class="stat-card"><div class="stat-num">{{ stats.cards.total }}</div><div class="stat-label">角色卡总数</div></div>
@@ -226,6 +229,77 @@ th,td{padding:.55rem .6rem;font-size:.8rem;white-space:nowrap}
                 <div class="flex gap-2">
                     <button class="btn btn-ghost btn-sm" :disabled="users.page<=1" @click="loadUsers(users.page-1)">上一页</button>
                     <button class="btn btn-ghost btn-sm" :disabled="users.page*users.pageSize>=users.total" @click="loadUsers(users.page+1)">下一页</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 在线会话 -->
+        <section v-if="view==='sessions'">
+            <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold">在线会话</h2>
+                    <p class="text-xs text-gray-500 mt-1">查看当前登录态，按用户、IP 或设备筛选，并清理过期 token</p>
+                </div>
+                <div class="flex gap-2">
+                    <input class="input w-48" v-model="sessionFilter.q" placeholder="用户 / IP / 设备" @keyup.enter="loadSessions(1)">
+                    <input class="input w-32" type="number" min="1" v-model="sessionFilter.userId" placeholder="用户 ID" @keyup.enter="loadSessions(1)">
+                    <select class="input w-32" v-model="sessionFilter.status" @change="loadSessions(1)">
+                        <option value="active">有效</option>
+                        <option value="expired">已过期</option>
+                        <option value="all">全部</option>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" @click="clearSessionFilter" v-if="sessionFilter.q || sessionFilter.userId || sessionFilter.status!=='active'">清空</button>
+                    <button class="btn btn-primary btn-sm" :disabled="sessions.loading" @click="loadSessions(1)">{{ sessions.loading?'刷新中...':'刷新' }}</button>
+                    <button class="btn btn-ghost btn-sm" :disabled="sessions.action==='cleanup' || !sessionStats.expiredSessions" @click="cleanupExpiredSessions">
+                        {{ sessions.action==='cleanup'?'清理中...':'清理过期' }}
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="stat-card metric-card"><div class="metric-kicker">Online Users</div><div class="stat-num mono">{{ formatNumber(sessionStats.onlineUsers) }}</div><div class="metric-sub">当前有效登录用户</div></div>
+                <div class="stat-card metric-card"><div class="metric-kicker">Active Sessions</div><div class="stat-num mono">{{ formatNumber(sessionStats.activeSessions) }}</div><div class="metric-sub">仍可刷新登录</div></div>
+                <div class="stat-card metric-card"><div class="metric-kicker">Expired</div><div class="stat-num mono">{{ formatNumber(sessionStats.expiredSessions) }}</div><div class="metric-sub">可安全清理</div></div>
+                <div class="stat-card metric-card"><div class="metric-kicker">Listed</div><div class="stat-num mono">{{ formatNumber(sessions.total) }}</div><div class="metric-sub">当前筛选结果</div></div>
+            </div>
+
+            <div class="card overflow-auto">
+                <table>
+                    <thead><tr><th>ID</th><th>用户</th><th>状态</th><th>设备</th><th>IP</th><th>创建</th><th>最近刷新</th><th>过期</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr v-for="s in sessions.list" :key="s.id">
+                            <td class="mono">{{ s.id }}</td>
+                            <td>
+                                <div class="font-medium">{{ s.username || ('#'+s.userId) }} <span v-if="s.isSelf" class="text-xs text-primary-600">自己</span></div>
+                                <div class="text-[11px] text-gray-400 mono">UID {{ s.userId }} · {{ s.displayName || '-' }}</div>
+                            </td>
+                            <td><span class="tag" :class="sessionStateClass(s.state)">{{ sessionStateLabel(s.state) }}</span></td>
+                            <td>
+                                <div class="text-sm text-gray-700">{{ s.device }}</div>
+                                <div class="text-[11px] text-gray-400 max-w-xs truncate" :title="s.userAgent">{{ s.userAgent || '-' }}</div>
+                            </td>
+                            <td class="mono text-xs">{{ s.ip || '-' }}</td>
+                            <td class="text-gray-500 text-xs">{{ formatDateTime(s.createdAt) }}</td>
+                            <td class="text-gray-500 text-xs">{{ formatDateTime(s.lastSeenAt) }}</td>
+                            <td>
+                                <div class="text-gray-500 text-xs">{{ formatDateTime(s.expiresAt) }}</div>
+                                <div class="text-[11px] text-gray-400">{{ formatRelativeTime(s.expiresAt) }}</div>
+                            </td>
+                            <td>
+                                <button class="btn btn-danger btn-sm" :disabled="s.isSelf || s.state!=='active' || sessions.action===s.id" @click="revokeSession(s)">
+                                    {{ sessions.action===s.id?'处理中...':'下线' }}
+                                </button>
+                            </td>
+                        </tr>
+                        <tr v-if="!sessions.list.length"><td colspan="9" class="text-center text-gray-400 py-6">{{ sessions.loading ? '正在加载会话...' : '暂无会话' }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-3 text-sm text-gray-600">
+                <span>共 {{ sessions.total }} 条 · 第 {{ sessions.page }} / {{ Math.ceil(sessions.total/sessions.pageSize) || 1 }} 页</span>
+                <div class="flex gap-2">
+                    <button class="btn btn-ghost btn-sm" :disabled="sessions.page<=1 || sessions.loading" @click="loadSessions(sessions.page-1)">上一页</button>
+                    <button class="btn btn-ghost btn-sm" :disabled="sessions.page*sessions.pageSize>=sessions.total || sessions.loading" @click="loadSessions(sessions.page+1)">下一页</button>
                 </div>
             </div>
         </section>
@@ -903,12 +977,66 @@ createApp({
                 const r = await sync.adminLogoutUser(u.id);
                 toast(`已清除 ${formatNumber(r.revoked || 0)} 个登录态`, 'success');
                 loadUsers(users.page);
+                if (view.value === 'sessions') loadSessions(sessions.page);
             } catch (e) { toast(e.message, 'error'); }
         }
         async function deleteUser(u) {
             if (!confirm(`确认删除用户 ${u.username}？该操作不可撤销，将一并删除其所有数据。`)) return;
             try { await sync.adminDeleteUser(u.id); toast('已删除', 'success'); loadUsers(users.page); }
             catch (e) { toast(e.message, 'error'); }
+        }
+
+        // Sessions
+        const sessions = reactive({ list: [], total: 0, page: 1, pageSize: 50, loading: false, action: '', stats: {} });
+        const sessionFilter = reactive({ q: '', status: 'active', userId: '' });
+        const sessionStats = computed(() => sessions.stats || {});
+        async function loadSessions(page = 1) {
+            sessions.loading = true;
+            try {
+                const userId = parseInt(sessionFilter.userId || '0', 10);
+                const r = await sync.adminSessions({
+                    page,
+                    pageSize: sessions.pageSize,
+                    q: sessionFilter.q,
+                    status: sessionFilter.status,
+                    userId: Number.isFinite(userId) && userId > 0 ? userId : '',
+                });
+                sessions.list = r.sessions || [];
+                sessions.total = r.total || 0;
+                sessions.page = r.page || page;
+                sessions.pageSize = r.pageSize || sessions.pageSize;
+                sessions.stats = r.stats || {};
+            } catch (e) { toast(e.message, 'error'); }
+            finally { sessions.loading = false; }
+        }
+        function clearSessionFilter() {
+            sessionFilter.q = '';
+            sessionFilter.userId = '';
+            sessionFilter.status = 'active';
+            loadSessions(1);
+        }
+        async function revokeSession(s) {
+            if (!s || s.isSelf) return;
+            if (!confirm(`确认下线 ${s.username || ('#' + s.userId)} 的这个会话？`)) return;
+            sessions.action = s.id;
+            try {
+                const r = await sync.adminLogoutSession(s.id);
+                toast(`已下线 ${formatNumber(r.revoked || 0)} 个会话`, 'success');
+                await loadSessions(sessions.page);
+                if (users.list.length) loadUsers(users.page);
+            } catch (e) { toast(e.message, 'error'); }
+            finally { sessions.action = ''; }
+        }
+        async function cleanupExpiredSessions() {
+            if (!confirm('确认清理全部已过期登录态？该操作不会影响有效会话。')) return;
+            sessions.action = 'cleanup';
+            try {
+                const r = await sync.adminCleanupExpiredSessions();
+                toast(`已清理 ${formatNumber(r.removed || 0)} 个过期会话`, 'success');
+                await loadSessions(1);
+                if (stats.value) loadStats();
+            } catch (e) { toast(e.message, 'error'); }
+            finally { sessions.action = ''; }
         }
 
         // Library
@@ -1238,6 +1366,8 @@ createApp({
             { value: 'admin_create_user', label: '创建用户' },
             { value: 'admin_update_user', label: '更新用户' },
             { value: 'admin_logout_user', label: '清除登录态' },
+            { value: 'admin_logout_session', label: '下线单个会话' },
+            { value: 'admin_cleanup_sessions', label: '清理过期会话' },
             { value: 'admin_delete_user', label: '删除用户' },
             { value: 'announcement_create', label: '创建公告' },
             { value: 'announcement_update', label: '更新公告' },
@@ -1275,6 +1405,7 @@ createApp({
             view.value = v;
             if (v === 'stats' && !stats.value) loadStats();
             if (v === 'users' && !users.list.length) loadUsers(1);
+            if (v === 'sessions' && !sessions.list.length) loadSessions(1);
             if (v === 'library' && !lib.list.length) loadLibrary(1);
             if (v === 'announcements' && !announcements.value.length) loadAnnouncements();
             if (v === 'apiusage' && !usageSummary.value) loadUsageSummary();
@@ -1295,14 +1426,35 @@ createApp({
             const d = new Date(ts);
             return `${d.getMonth()+1}/${d.getDate()}`;
         }
+        function formatRelativeTime(ts) {
+            const value = Number(ts || 0);
+            if (!value) return '-';
+            const diff = value - Date.now();
+            const abs = Math.abs(diff);
+            const units = [
+                [86400000, '天'],
+                [3600000, '小时'],
+                [60000, '分钟'],
+            ];
+            for (const [ms, label] of units) {
+                if (abs >= ms) {
+                    const amount = Math.round(abs / ms);
+                    return diff >= 0 ? `${amount}${label}后` : `${amount}${label}前`;
+                }
+            }
+            return diff >= 0 ? '即将过期' : '刚刚过期';
+        }
         const STATUS_LABELS = { active: '正常', banned: '封禁', disabled: '停用' };
         const CARD_STATUS_LABELS = { pending: '待审核', approved: '已上架', rejected: '已拒绝', offline: '已下架' };
         const ANN_TYPE_LABELS = { info: '通知', notice: '公告', maintenance: '维护' };
         const ACTIVE_LABELS = { true: '生效中', false: '已停用' };
+        const SESSION_STATE_LABELS = { active: '有效', expired: '已过期' };
         function statusLabel(s) { return STATUS_LABELS[s] || s; }
         function cardStatusLabel(s) { return CARD_STATUS_LABELS[s] || s; }
         function annTypeLabel(t) { return ANN_TYPE_LABELS[t] || t; }
         function activeLabel(a) { return a ? '生效中' : '已停用'; }
+        function sessionStateLabel(s) { return SESSION_STATE_LABELS[s] || s || '-'; }
+        function sessionStateClass(s) { return s === 'active' ? 'tag-active' : 'tag-disabled'; }
         function isAnnouncementExpired(a) {
             const expiresAt = Number(normalizeAnnouncement(a).expiresAt || 0);
             return !!expiresAt && expiresAt <= Date.now();
@@ -1330,8 +1482,9 @@ createApp({
 
         return {
             sync, view, toasts, setView, goApp, goLogin, doLogout,
-            stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime,
+            stats, statsRange, loadStats, maxLogins, formatDate, formatDateTime, formatRelativeTime,
             users, userFilter, loadUsers, userEditor, openCreateUser, openEditUser, saveUser, toggleBan, logoutUser, deleteUser,
+            sessions, sessionFilter, sessionStats, loadSessions, clearSessionFilter, revokeSession, cleanupExpiredSessions,
             lib, libFilter, loadLibrary, clearLibraryFilter, cardPreview, previewCard, reviewCard, reviewCardWithNote, deleteCard, rejectEditor, confirmReject,
             announcements, loadAnnouncements, annEditor, openAnnouncementEditor, saveAnnouncement, toggleAnnouncementPinned,
             toggleAnnouncementActive, deleteAnnouncement, announcementStatusLabel, announcementStatusClass,
@@ -1341,7 +1494,7 @@ createApp({
             formatUsageBucket, usageModelShare, usageEndpointShare, formatEndpoint,
             maintenance, maintenanceSync, maintenanceImages, loadMaintenance, runRebuildSyncHashes, runCleanupImageCacheTemp,
             audit, auditFilter, auditActionOptions, loadAudit, clearAuditFilter, auditActionLabel,
-            statusLabel, cardStatusLabel, annTypeLabel, activeLabel,
+            statusLabel, cardStatusLabel, annTypeLabel, activeLabel, sessionStateLabel, sessionStateClass,
         };
     }
 }).mount('#app');

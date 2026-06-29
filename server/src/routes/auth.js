@@ -37,6 +37,14 @@ function validPassword(p) {
   return typeof p === 'string' && p.length >= 6 && p.length <= 128;
 }
 
+function requestMeta(req) {
+  const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return {
+    ip: String(forwardedFor || req.ip || '').slice(0, 64),
+    userAgent: String(req.headers['user-agent'] || '').slice(0, 512),
+  };
+}
+
 function publicUser(u) {
   if (!u) return null;
   return {
@@ -77,7 +85,7 @@ router.post('/register', registerLimiter, (req, res, next) => {
 
     const access = signAccessToken(user);
     const refresh = signRefreshToken(user);
-    storeRefresh(user.id, refresh);
+    storeRefresh(user.id, refresh, requestMeta(req));
     res.json({ token: access, refreshToken: refresh, user: publicUser(user) });
   } catch (e) { next(e); }
 });
@@ -103,7 +111,7 @@ router.post('/login', loginLimiter, (req, res, next) => {
 
     const access = signAccessToken(user);
     const refresh = signRefreshToken(user);
-    storeRefresh(user.id, refresh);
+    storeRefresh(user.id, refresh, requestMeta(req));
     res.json({ token: access, refreshToken: refresh, user: publicUser(user) });
   } catch (e) { next(e); }
 });
@@ -127,7 +135,10 @@ router.post('/refresh', (req, res, next) => {
     db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(stored.id);
     const access = signAccessToken(user);
     const newRefresh = signRefreshToken(user);
-    storeRefresh(user.id, newRefresh);
+    storeRefresh(user.id, newRefresh, {
+      ...requestMeta(req),
+      createdAt: stored.created_at,
+    });
     res.json({ token: access, refreshToken: newRefresh, user: publicUser(user) });
   } catch (e) { next(e); }
 });
@@ -182,11 +193,14 @@ router.patch('/me', authRequired, (req, res, next) => {
 });
 
 // ---------- Helper: store refresh token ----------
-function storeRefresh(userId, token) {
+function storeRefresh(userId, token, meta = {}) {
   const hash = hashRefreshToken(token);
   const payload = verifyRefreshToken(token);
   const expiresAt = payload ? payload.exp * 1000 : now() + 30 * 24 * 3600 * 1000;
+  const issuedAt = Number(meta.createdAt || 0) > 0 ? Number(meta.createdAt) : now();
+  const seenAt = now();
   // Limit to 5 refresh tokens per user
+  db.prepare('DELETE FROM refresh_tokens WHERE user_id = ? AND expires_at <= ?').run(userId, seenAt);
   const count = db.prepare('SELECT COUNT(*) as c FROM refresh_tokens WHERE user_id = ?').get(userId).c;
   if (count >= 5) {
     // node:sqlite doesn't support DELETE ... ORDER BY ... LIMIT, use subquery instead
@@ -196,8 +210,17 @@ function storeRefresh(userId, token) {
     }
   }
   db.prepare(
-    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?)'
-  ).run(userId, hash, expiresAt, now());
+    `INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_at, ip, user_agent, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    userId,
+    hash,
+    expiresAt,
+    issuedAt,
+    String(meta.ip || '').slice(0, 64),
+    String(meta.userAgent || '').slice(0, 512),
+    seenAt
+  );
 }
 
 export default router;
